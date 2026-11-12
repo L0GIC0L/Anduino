@@ -8,6 +8,7 @@ import com.l0gic0l.anduino.core.BuildActions
 import com.l0gic0l.anduino.core.ConsoleLog
 import com.l0gic0l.anduino.core.JobManager
 import com.l0gic0l.anduino.core.Prefs
+import com.l0gic0l.anduino.core.ToolchainRepair
 import com.l0gic0l.anduino.env.Bootstrapper
 import com.l0gic0l.anduino.env.LinuxEnv
 import com.l0gic0l.anduino.serial.SerialMonitor
@@ -32,6 +33,7 @@ class AppContainer(private val context: Context) {
     val sketches = SketchRepository(env.hostPath(LinuxEnv.SKETCHBOOK))
     val bootstrapper = Bootstrapper(env, context.cacheDir)
     val build = BuildActions(env, cli, usbPorts, monitor, console, prefs)
+    val repair = ToolchainRepair(env, cli, console)
 
     /** False until the Linux environment and arduino-cli are installed. */
     val envReady = MutableStateFlow(env.isInstalled)

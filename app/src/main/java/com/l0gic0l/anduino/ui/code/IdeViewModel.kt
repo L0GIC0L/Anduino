@@ -64,6 +64,10 @@ class IdeViewModel(private val c: AppContainer) : ViewModel() {
     private val _examples = MutableStateFlow<List<LibraryExamples>?>(null)
     val examples: StateFlow<List<LibraryExamples>?> = _examples.asStateFlow()
 
+    private val _repairNeeded = MutableStateFlow(false)
+    /** True when toolchains installed by Anduino 0.1.0 have broken hard links. */
+    val repairNeeded: StateFlow<Boolean> = _repairNeeded.asStateFlow()
+
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
@@ -76,6 +80,18 @@ class IdeViewModel(private val c: AppContainer) : ViewModel() {
             refreshSketches()
         }
         refreshBoardDetails()
+        viewModelScope.launch {
+            _repairNeeded.value = runCatching { c.repair.needsRepair() }.getOrDefault(false)
+        }
+    }
+
+    fun dismissRepair() {
+        _repairNeeded.value = false
+    }
+
+    fun repairToolchains() {
+        _repairNeeded.value = false
+        if (!c.jobs.launch("Repairing toolchains") { c.repair.repair(this) }) message("Another task is still running")
     }
 
     fun message(text: String) {

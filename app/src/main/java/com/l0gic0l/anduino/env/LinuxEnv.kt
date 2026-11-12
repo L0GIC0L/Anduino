@@ -21,6 +21,15 @@ class LinuxEnv(context: Context) {
     private val fakeProc = File(base, "fake-proc")
     private val marker = File(base, ".installed")
 
+    /**
+     * Where proot keeps the files behind its emulated hard links (Android forbids
+     * link(2) in app storage). Without a fixed directory proot puts them next to the
+     * original file and points absolute symlinks at them, which dangle as soon as the
+     * directory is renamed -- exactly what arduino-cli does after extracting every
+     * toolchain (it unpacks into a temp dir, then renames it into place).
+     */
+    private val l2sDir = File(rootfs, ".l2s")
+
     /** Set from settings; disables proot's seccomp acceleration on devices where it misbehaves. */
     @Volatile var disableSeccomp: Boolean = false
 
@@ -52,6 +61,7 @@ class LinuxEnv(context: Context) {
      */
     fun processBuilder(argv: List<String>, cwd: String = HOME, extraEnv: Map<String, String> = emptyMap()): ProcessBuilder {
         prootTmp.mkdirs()
+        if (rootfs.isDirectory) l2sDir.mkdirs()
         val cmd = ArrayList<String>()
         cmd += proot.absolutePath
         cmd += listOf("--kill-on-exit", "--link2symlink", "--sysvipc", "--root-id")
@@ -93,6 +103,7 @@ class LinuxEnv(context: Context) {
                 clear()
                 put("PROOT_LOADER", loader.absolutePath)
                 put("PROOT_TMP_DIR", prootTmp.absolutePath)
+                put("PROOT_L2S_DIR", l2sDir.absolutePath)
                 put("LD_LIBRARY_PATH", nativeLibDir.absolutePath)
                 put("PATH", System.getenv("PATH") ?: "/system/bin")
                 put("ANDROID_ROOT", System.getenv("ANDROID_ROOT") ?: "/system")
@@ -115,6 +126,7 @@ class LinuxEnv(context: Context) {
     /** Writes the small files the rootfs needs to work under proot on Android. */
     fun configureRootfs(dnsServers: List<String>) {
         File(rootfs, "tmp").apply { mkdirs(); setWritable(true, false) }
+        l2sDir.mkdirs()
         File(rootfs, "root/Arduino").mkdirs()
         writeResolvConf(dnsServers)
         File(rootfs, "etc/hosts").apply {
@@ -151,6 +163,9 @@ class LinuxEnv(context: Context) {
             writeText(servers.joinToString("") { "nameserver $it\n" })
         }
     }
+
+    /** Installed board packages (cores and tools) on the Android side. */
+    val packagesDir: File get() = hostPath("/root/.arduino15/packages")
 
     companion object {
         const val HOME = "/root"

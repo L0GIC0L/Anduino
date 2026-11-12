@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -110,6 +111,7 @@ fun CodeScreen(
     val ports by vm.ports.collectAsStateWithLifecycle()
     val job by vm.job.collectAsStateWithLifecycle()
     val boardDetails by vm.boardDetails.collectAsStateWithLifecycle()
+    val repairNeeded by vm.repairNeeded.collectAsStateWithLifecycle()
     val fontSize by prefs.editorFontSize.flow.collectAsStateWithLifecycle()
     val tabSize by prefs.tabSize.flow.collectAsStateWithLifecycle()
     val wordWrap by prefs.wordWrap.flow.collectAsStateWithLifecycle()
@@ -280,6 +282,23 @@ fun CodeScreen(
                 }
             },
             onClearOutput = vm::clearConsole,
+        )
+    }
+
+    if (repairNeeded) {
+        AlertDialog(
+            onDismissRequest = vm::dismissRepair,
+            title = { Text("Repair installed toolchains?") },
+            text = {
+                Text(
+                    "Some compiler files of your installed cores were unpacked incorrectly by an earlier " +
+                        "version of Anduino, so compiling fails (\"…-g++ is not exist\"). Repair reinstalls the " +
+                        "cores at the same version from the download cache; it takes a few minutes and " +
+                        "downloads nothing.",
+                )
+            },
+            confirmButton = { TextButton(onClick = vm::repairToolchains) { Text("Repair") } },
+            dismissButton = { TextButton(onClick = vm::dismissRepair) { Text("Later") } },
         )
     }
 

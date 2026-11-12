@@ -151,6 +151,10 @@ fun SettingsScreen(c: AppContainer) {
                     c.env.disableSeccomp = it
                 }
                 ShellCard(c)
+                OutlinedButton(
+                    onClick = { c.jobs.launch("Repairing toolchains") { c.repair.repair(this) } },
+                    enabled = job == null,
+                ) { Text("Repair installed cores") }
                 OutlinedButton(onClick = { confirmReinstall = true }, enabled = job == null) { Text("Repair / reinstall environment") }
 
                 Section("About")

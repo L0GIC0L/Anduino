@@ -12,12 +12,24 @@ android {
         applicationId = "com.l0gic0l.anduino"
         minSdk = 29
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
 
         // The bundled proot binaries exist for these two ABIs only
         // (arm64 = phones/foldables, x86_64 = emulator).
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    signingConfigs {
+        // A fixed, public debug key (committed on purpose) so every CI or local build can be
+        // installed over the previous one; a new key would force an uninstall, which deletes
+        // the installed Linux environment and cores.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {

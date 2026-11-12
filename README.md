@@ -90,6 +90,10 @@ Every push runs the **Android CI** GitHub Actions workflow, which runs the unit 
 uploads `anduino-apks` (debug and release APK) as a build artifact. Download it from the
 workflow run's page, unzip, and install the APK on the phone (allow "install unknown apps").
 
+Builds are signed with the public debug key committed at `app/debug.keystore`, so a new
+APK installs over the previous one and keeps the installed environment and cores. (APKs
+from before 0.1.1 were signed with a throwaway CI key: uninstall that one once.)
+
 ## Building
 
 Requirements: JDK 17+, Android SDK Platform 37 and Build-Tools (Android Studio installs
@@ -115,6 +119,8 @@ Supported device ABIs: `arm64-v8a` (phones, foldables) and `x86_64` (emulator).
    access, and press **Upload** (→). The first ESP32 build compiles the core and takes a
    few minutes; later builds are incremental.
 3. If an upload can't connect, hold **BOOT**, tap **RESET**, release **BOOT** and retry.
+4. If compiling fails with `...-g++ is not exist` (cores installed by 0.1.0), accept the
+   repair prompt or use **Settings → Repair installed cores**.
 
 ## Project layout
 
