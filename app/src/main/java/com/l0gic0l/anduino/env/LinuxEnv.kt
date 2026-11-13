@@ -15,7 +15,12 @@ class LinuxEnv(context: Context) {
     val proot = File(nativeLibDir, "libproot.so")
     private val loader = File(nativeLibDir, "libproot-loader.so")
 
-    val base = File(context.filesDir, "linux")
+    /**
+     * Fully resolved (canonical) path. Android's filesDir is `/data/user/0/<pkg>/files`,
+     * where `/data/user/0` is a symlink to `/data/data`; proot resolves its rootfs, so any
+     * path proot writes into a symlink (PROOT_L2S_DIR) must use the same resolved form.
+     */
+    val base = File(context.filesDir.canonicalFile, "linux")
     val rootfs = File(base, "rootfs")
     private val prootTmp = File(base, "proot-tmp")
     private val fakeProc = File(base, "fake-proc")
@@ -28,7 +33,7 @@ class LinuxEnv(context: Context) {
      * directory is renamed -- exactly what arduino-cli does after extracting every
      * toolchain (it unpacks into a temp dir, then renames it into place).
      */
-    private val l2sDir = File(rootfs, ".l2s")
+    val l2sDir = File(rootfs, ".l2s")
 
     /** Set from settings; disables proot's seccomp acceleration on devices where it misbehaves. */
     @Volatile var disableSeccomp: Boolean = false

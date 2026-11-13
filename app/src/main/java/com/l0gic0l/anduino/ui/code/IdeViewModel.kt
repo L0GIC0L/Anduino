@@ -81,7 +81,7 @@ class IdeViewModel(private val c: AppContainer) : ViewModel() {
         }
         refreshBoardDetails()
         viewModelScope.launch {
-            _repairNeeded.value = runCatching { c.repair.needsRepair() }.getOrDefault(false)
+            _repairNeeded.value = runCatching { c.repair.checkAndFix() }.getOrDefault(false)
         }
     }
 

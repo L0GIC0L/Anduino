@@ -132,6 +132,7 @@ private fun startSetup(c: AppContainer, withEsp32: Boolean, withAvr: Boolean) {
                 c.prefs.boardName.set("Arduino Uno")
             }
         }
+        if (withEsp32 || withAvr) c.repair.verifyAfterInstall(this)
         c.console.success("Setup complete.")
         c.envReady.value = true
     }

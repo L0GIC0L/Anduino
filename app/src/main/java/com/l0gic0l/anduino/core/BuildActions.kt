@@ -37,9 +37,14 @@ class BuildActions(
         job.step("Compiling ${sketchDir.name}")
         console.info("Compiling ${sketchDir.name} for $fqbn")
         val started = System.currentTimeMillis()
+        var toolMissing = false
         val code = cli.compile(guestSketch, fqbn, buildPath, prefs.warnings.value, prefs.verboseCompile.value) {
             console.append(it)
             if (it.transient) job.step(it.text)
+            if (it.text.contains("is not exist")) toolMissing = true
+        }
+        if (code != 0 && toolMissing) {
+            console.info("A compiler file is unreachable. Use Settings → Repair installed cores, then verify again.")
         }
         val seconds = (System.currentTimeMillis() - started) / 1000.0
         return if (code == 0) {

@@ -56,6 +56,7 @@ class ManagerViewModel(private val c: AppContainer) : ViewModel() {
     fun installCore(p: PlatformSummary, version: String? = null) =
         job("Installing ${p.name}") {
             check(c.cli.coreInstall(p.id, version, log(this)) == 0) { "arduino-cli core install failed" }
+            c.repair.verifyAfterInstall(this)
             c.console.success("${p.name} installed.")
             loadPlatforms()
         }
