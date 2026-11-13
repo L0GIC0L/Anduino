@@ -29,10 +29,11 @@ class BuildActions(
     private val monitor: SerialMonitor,
     private val console: ConsoleLog,
     private val prefs: Prefs,
+    private val fastBuild: FastBuild,
 ) {
     /** Compiles [sketchDir]; returns the guest build path on success, null on failure. */
     suspend fun compile(job: JobScope, sketchDir: File, fqbn: String): String? {
-        val guestSketch = env.guestPath(sketchDir) ?: throw CliException("Sketch is outside the sketchbook")
+        val guestSketch = env.guestPath(sketchDir)?.let(env::sharedPath) ?: throw CliException("Sketch is outside the sketchbook")
         val buildPath = cli.buildPathFor(sketchDir.name, fqbn)
         job.step("Compiling ${sketchDir.name}")
         console.info("Compiling ${sketchDir.name} for $fqbn")
@@ -46,10 +47,14 @@ class BuildActions(
         val started = System.currentTimeMillis()
         var toolMissing = false
         val progress = CompileProgress(showCommands = prefs.verboseCompile.value)
+        job.step("Preparing the compiler")
+        fastBuild.prepare(prefs.fastCompile.value)
+        // Paths are passed as Android paths (see LinuxEnv.sharedPath); show them the short way.
+        val rootPrefix = env.rootPath
         // Always -v: otherwise arduino-cli is silent until the build ends.
         val code = cli.compile(guestSketch, fqbn, buildPath, prefs.warnings.value, verbose = true) {
             val d = progress.accept(it)
-            if (d.show) console.append(it)
+            if (d.show) console.append(if (it.text.contains(rootPrefix)) it.copy(text = it.text.replace(rootPrefix, "")) else it)
             d.step?.let(job::step)
             if (it.text.contains("is not exist")) toolMissing = true
         }
@@ -72,7 +77,7 @@ class BuildActions(
 
     suspend fun upload(job: JobScope, sketchDir: File, fqbn: String, port: String) {
         val buildPath = compile(job, sketchDir, fqbn) ?: return
-        val guestSketch = env.guestPath(sketchDir)!!
+        val guestSketch = env.sharedPath(env.guestPath(sketchDir)!!)
 
         if (port.startsWith(OTA_PREFIX)) {
             val host = port.removePrefix(OTA_PREFIX)

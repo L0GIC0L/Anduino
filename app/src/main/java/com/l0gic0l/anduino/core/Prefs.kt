@@ -82,6 +82,7 @@ class Prefs(context: Context) {
     val verboseCompile = bool("verbose_compile", false)
     val boardManagerUrls = string("board_urls", Bootstrapper.DEFAULT_URLS.joinToString("\n"))
     val disableSeccomp = bool("disable_seccomp", false)
+    val fastCompile = bool("fast_compile", true)
 
     fun boardUrlList(): List<String> = boardManagerUrls.value.lines().map { it.trim() }.filter { it.isNotEmpty() }
 }

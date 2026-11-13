@@ -49,8 +49,24 @@ class LinuxEnv(context: Context) {
         marker.delete()
     }
 
-    /** Maps a path inside the Linux environment to the real file on Android. */
-    fun hostPath(guestPath: String): File = File(rootfs, guestPath.removePrefix("/"))
+    /** The rootfs path as Android sees it (canonical, see [base]). */
+    val rootPath: String get() = rootfs.absolutePath
+
+    /**
+     * Maps a path inside the Linux environment to the real file on Android. Paths that
+     * are already "shared" (see [sharedPath]) are returned as they are.
+     */
+    fun hostPath(guestPath: String): File =
+        if (guestPath == rootPath || guestPath.startsWith("$rootPath/")) File(guestPath)
+        else File(rootfs, guestPath.removePrefix("/"))
+
+    /**
+     * The rootfs is also bound into itself at its own Android path, so
+     * `<rootPath>/root/Arduino` names the same directory inside proot and outside it.
+     * Paths in this form can be handed to programs running natively (fast compile path).
+     */
+    fun sharedPath(guestPath: String): String =
+        if (guestPath.startsWith("$rootPath/")) guestPath else rootPath + "/" + guestPath.removePrefix("/")
 
     /** Inverse of [hostPath]; null if [host] is outside the rootfs. */
     fun guestPath(host: File): String? {
@@ -82,6 +98,8 @@ class LinuxEnv(context: Context) {
             "--bind=/proc/self/fd/2:/dev/stderr",
             "--bind=/sys",
             "--bind=${File(rootfs, "tmp").absolutePath}:/dev/shm",
+            // Same directory under its Android path too (see sharedPath()).
+            "--bind=$rootPath:$rootPath",
         )
         // Android hides several /proc files from apps; some tools expect them.
         for (name in FAKE_PROC_FILES) {
@@ -98,6 +116,12 @@ class LinuxEnv(context: Context) {
             "TMPDIR" to "/tmp",
             "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         )
+        // arduino-cli works with shared paths, so every path it puts on a compiler command
+        // line is valid outside proot as well (the native fast path needs that).
+        env["ARDUINO_DIRECTORIES_DATA"] = sharedPath("/root/.arduino15")
+        env["ARDUINO_DIRECTORIES_DOWNLOADS"] = sharedPath("/root/.arduino15/staging")
+        env["ARDUINO_DIRECTORIES_USER"] = sharedPath(SKETCHBOOK)
+        env["ARDUINO_BUILD_CACHE_PATH"] = sharedPath("/root/.cache/arduino")
         env.putAll(extraEnv)
         env.forEach { (k, v) -> cmd += "$k=$v" }
         cmd += argv

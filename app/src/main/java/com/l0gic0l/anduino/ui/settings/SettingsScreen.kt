@@ -142,6 +142,15 @@ fun SettingsScreen(c: AppContainer) {
                 ) { Text("Save and update index") }
 
                 Section("Linux environment")
+                val fast by p.fastCompile.flow.collectAsStateWithLifecycle()
+                SwitchRow(
+                    "Fast native compiler",
+                    "Runs compilers outside the proot layer, many times faster. Turn off if builds fail in a way they didn't before.",
+                    fast,
+                ) {
+                    p.fastCompile.set(it)
+                    if (!it) c.fastBuild.removeOverrides()
+                }
                 SwitchRow(
                     "Disable proot seccomp acceleration",
                     "Slower, but works around crashes on some devices",

@@ -123,7 +123,7 @@ class ArduinoCli(private val env: LinuxEnv) {
 
     fun buildPathFor(sketchName: String, fqbn: String): String {
         val board = Fqbn.parse(fqbn).base.replace(':', '.')
-        return "${LinuxEnv.BUILD_ROOT}/${sketchName}_$board"
+        return env.sharedPath("${LinuxEnv.BUILD_ROOT}/${sketchName}_$board")
     }
 
     suspend fun compile(

@@ -3,6 +3,11 @@ package com.l0gic0l.anduino
 import android.app.Application
 import android.content.Context
 import android.net.ConnectivityManager
+import android.os.Build
+import com.l0gic0l.anduino.core.FastBuild
+import com.l0gic0l.anduino.env.ExecServer
+import com.l0gic0l.anduino.env.NativeExec
+import java.io.File
 import com.l0gic0l.anduino.cli.ArduinoCli
 import com.l0gic0l.anduino.core.BuildActions
 import com.l0gic0l.anduino.core.ConsoleLog
@@ -32,7 +37,15 @@ class AppContainer(private val context: Context) {
     val monitor = SerialMonitor(usbPorts, appScope)
     val sketches = SketchRepository(env.hostPath(LinuxEnv.SKETCHBOOK))
     val bootstrapper = Bootstrapper(env, context.cacheDir)
-    val build = BuildActions(env, cli, usbPorts, monitor, console, prefs)
+    val native = NativeExec(
+        nativeLibDir = File(context.applicationInfo.nativeLibraryDir),
+        rootfs = env.rootfs,
+        glibcDir = File(env.base, "glibc"),
+        triplet = if (Build.SUPPORTED_ABIS.firstOrNull() == "x86_64") "x86_64-linux-gnu" else "aarch64-linux-gnu",
+    )
+    val execServer = ExecServer(native, env.hostPath(NativeExec.CONF_GUEST_PATH)) { console.info(it) }
+    val fastBuild = FastBuild(env, native, execServer, console)
+    val build = BuildActions(env, cli, usbPorts, monitor, console, prefs, fastBuild)
     val repair = ToolchainRepair(env, cli, console)
 
     /** False until the Linux environment and arduino-cli are installed. */

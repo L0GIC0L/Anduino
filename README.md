@@ -53,6 +53,15 @@ without changing the rest of the app.
   of esptool 5.x used by `write-flash -z --no-stub`).
 * **Compilation** is exactly `arduino-cli compile`, so build options, partition schemes,
   `build_opt.h`, libraries and examples behave as on a desktop.
+* **Fast native compiler.** proot intercepts every file lookup; ESP32 builds search ~400
+  include folders per header, which made each compiler run ~30x slower. So the heavy
+  recipes (compile, preprocess, archive, link) are prefixed, via `platform.local.txt`,
+  with a tiny relay (`native/run_client.c`). It hands each command to the app, which
+  runs it *outside* proot through glibc's own loader shipped in the APK
+  (`libanduino-ld.so`, allowed to exec) plus an exec shim (`native/exec_shim.c`) that
+  routes the compiler's sub-processes the same way — the glibc counterpart of
+  termux-exec's "system linker exec". Anything that can't run natively falls back to
+  proot automatically; Settings has a switch to turn it off.
 
 ## Features
 
@@ -105,9 +114,11 @@ them), internet access for Gradle.
 ./gradlew assembleRelease        # R8-shrunk, signed with the debug key for side-loading
 ```
 
-The prebuilt proot binaries in `app/src/main/jniLibs/` and the editor assets in
+The prebuilt binaries in `app/src/main/jniLibs/` and the editor assets in
 `app/src/main/assets/textmate/` are committed. They can be regenerated with
-`scripts/fetch-proot.sh` (needs `patchelf`) and `scripts/fetch-editor-assets.sh`.
+`scripts/fetch-proot.sh` (needs `patchelf`), `scripts/fetch-glibc.sh` (Ubuntu 24.04
+glibc 2.39), `scripts/build-native.sh` (needs `gcc` and `gcc-aarch64-linux-gnu`) and
+`scripts/fetch-editor-assets.sh`.
 Supported device ABIs: `arm64-v8a` (phones, foldables) and `x86_64` (emulator).
 
 ## First run
@@ -141,6 +152,7 @@ app/src/test/  unit tests (simulated ESP ROM bootloader and Optiboot, parsers)
 
 Anduino's own code is MIT (see `LICENSE`). Bundled third-party components:
 proot (GPL-2.0, binaries from the Termux project, source: https://github.com/termux/proot),
+glibc (LGPL-2.1, Ubuntu 24.04 `libc6` package, source: the Ubuntu `glibc` source package),
 talloc (LGPL-3.0), libandroid-shmem (BSD-3-Clause), sora-editor (LGPL-2.1),
 usb-serial-for-android (MIT), VS Code C++ grammar and Dark+/Light+ themes via
 tm-grammars/tm-themes (MIT). Downloaded at runtime, not bundled: Ubuntu packages,
