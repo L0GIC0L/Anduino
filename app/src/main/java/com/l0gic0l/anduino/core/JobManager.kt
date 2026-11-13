@@ -13,7 +13,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-data class JobState(val title: String, val step: String? = null, val progress: Float? = null)
+data class JobState(
+    val title: String,
+    val step: String? = null,
+    val progress: Float? = null,
+    val startedAt: Long = System.currentTimeMillis(),
+)
 
 class JobScope internal constructor(private val manager: JobManager, val title: String) {
     /** Updates the status line and the notification. [progress] null = indeterminate. */
@@ -62,7 +67,8 @@ class JobManager(private val context: Context, private val scope: CoroutineScope
     }
 
     internal fun update(state: JobState) {
-        if (_current.value != null) _current.value = state
+        val current = _current.value ?: return
+        _current.value = state.copy(startedAt = current.startedAt)
     }
 
     private fun startService() {

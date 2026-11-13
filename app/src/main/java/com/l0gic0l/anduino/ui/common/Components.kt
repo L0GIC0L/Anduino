@@ -25,6 +25,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,7 +51,17 @@ fun JobBar(state: JobState?, onCancel: () -> Unit, modifier: Modifier = Modifier
                 modifier = Modifier.padding(start = 16.dp, end = 4.dp),
             ) {
                 Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
-                    Text(state.title, style = MaterialTheme.typography.labelLarge)
+                    // A ticking clock shows the job is alive even when a step takes minutes.
+                    val elapsed by produceState(0L, state.startedAt) {
+                        while (true) {
+                            value = (System.currentTimeMillis() - state.startedAt) / 1000
+                            delay(1000)
+                        }
+                    }
+                    Text(
+                        "${state.title} · ${"%d:%02d".format(elapsed / 60, elapsed % 60)}",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
                     state.step?.let {
                         Text(
                             it,

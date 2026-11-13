@@ -38,9 +38,12 @@ class BuildActions(
         console.info("Compiling ${sketchDir.name} for $fqbn")
         val started = System.currentTimeMillis()
         var toolMissing = false
-        val code = cli.compile(guestSketch, fqbn, buildPath, prefs.warnings.value, prefs.verboseCompile.value) {
-            console.append(it)
-            if (it.transient) job.step(it.text)
+        val progress = CompileProgress(showCommands = prefs.verboseCompile.value)
+        // Always -v: otherwise arduino-cli is silent until the build ends.
+        val code = cli.compile(guestSketch, fqbn, buildPath, prefs.warnings.value, verbose = true) {
+            val d = progress.accept(it)
+            if (d.show) console.append(it)
+            d.step?.let(job::step)
             if (it.text.contains("is not exist")) toolMissing = true
         }
         if (code != 0 && toolMissing) {
@@ -48,7 +51,11 @@ class BuildActions(
         }
         val seconds = (System.currentTimeMillis() - started) / 1000.0
         return if (code == 0) {
-            console.success("Compilation finished in %.1f s.".format(seconds))
+            console.success(
+                "Compilation finished in %s (%d files compiled, %d reused).".format(
+                    formatDuration(seconds.toLong()), progress.compiled, progress.reused,
+                ),
+            )
             buildPath
         } else {
             console.error("Compilation failed (exit code $code).")
@@ -206,5 +213,8 @@ class BuildActions(
 
     companion object {
         const val OTA_PREFIX = "ota:"
+
+        fun formatDuration(seconds: Long): String =
+            if (seconds < 60) "$seconds s" else "%d min %02d s".format(seconds / 60, seconds % 60)
     }
 }
