@@ -18,6 +18,11 @@ class CompileProgress(private val showCommands: Boolean) {
         private set
     var reused = 0
         private set
+    /** Files preprocessed while detecting libraries (the slow part of a first build). */
+    var checked = 0
+        private set
+    var cachedChecks = 0
+        private set
 
     fun accept(line: OutputLine): Decision {
         val text = line.text.trim()
@@ -25,6 +30,15 @@ class CompileProgress(private val showCommands: Boolean) {
         PHASES.firstOrNull { text.startsWith(it) }?.let {
             phase = it
             return Decision(true, "$it…")
+        }
+        PREPROCESS_COMMAND.find(text)?.let { m ->
+            checked++
+            val file = m.groupValues[1].substringAfterLast('/')
+            return Decision(showCommands, "$phase: $file (${checked + cachedChecks} files checked)")
+        }
+        if (text.startsWith("Using cached library dependencies")) {
+            cachedChecks++
+            return Decision(showCommands, "$phase: ${checked + cachedChecks} files checked ($cachedChecks from cache)")
         }
         COMPILE_COMMAND.find(text)?.let { m ->
             compiled++
@@ -58,6 +72,10 @@ class CompileProgress(private val showCommands: Boolean) {
             "FQBN:", "Using board", "Using core", "Using library", "Using cached library",
             "Alternatives for", "ResolveLibrary", "Archiving built core",
         )
+
+        /** Library detection preprocesses each file: `... -E ... source.cpp -o /dev/null`. */
+        private val PREPROCESS_COMMAND =
+            Regex("""(\S+?\.(?:cpp|cc|cxx|c|S|s|ino))"?\s+-o\s+"?/dev/null"?(?:\s|$)""")
 
         /** `... source.cpp -o object.cpp.o`, with or without quotes. */
         private val COMPILE_COMMAND =

@@ -361,7 +361,7 @@ fun CodeScreen(
 
 private enum class CodeDialog { Board, Options, Port, NewFile, NewSketch, Rename }
 
-private val PANEL_TABS = listOf("Output", "Serial Monitor", "Serial Plotter")
+private val PANEL_TABS = listOf("Output", "Monitor", "Plotter")
 
 /**
  * Lays out the editor and the Output/Monitor/Plotter panel for the current window:

@@ -16,7 +16,13 @@ class CompileProgressTest {
 
         assertTrue(out("FQBN: esp32:esp32:esp32").let { !it.show && it.step == null })
         assertEquals(CompileProgress.Decision(true, "Detecting libraries used…"), out("Detecting libraries used..."))
-        assertFalse(out("$gxx -c @/tmp/flags -w -x c++ -E -CC /root/.cache/b/sketch/sketch.ino.cpp -o /dev/null").show)
+        val detect = out("$gxx -c @/tmp/flags -w -x c++ -E -CC /root/.cache/b/sketch/sketch.ino.cpp -o /dev/null")
+        assertFalse(detect.show)
+        assertEquals("Detecting libraries used: sketch.ino.cpp (1 files checked)", detect.step)
+        assertEquals(
+            "Detecting libraries used: 2 files checked (1 from cache)",
+            out("Using cached library dependencies for file: /root/Arduino/libraries/GxEPD2/src/GxEPD2_EPD.cpp").step,
+        )
         assertEquals("Compiling core…", out("Compiling core...").step)
 
         val compile = out(

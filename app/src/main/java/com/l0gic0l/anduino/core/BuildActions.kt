@@ -36,6 +36,13 @@ class BuildActions(
         val buildPath = cli.buildPathFor(sketchDir.name, fqbn)
         job.step("Compiling ${sketchDir.name}")
         console.info("Compiling ${sketchDir.name} for $fqbn")
+        if (!env.hostPath(buildPath).isDirectory) {
+            console.info(
+                "First build of this sketch for this board: every library and the core are compiled from " +
+                    "scratch. Android's Linux layer makes each compiler step much slower than on a PC, so " +
+                    "this can take a long time with big libraries. Later builds reuse the results.",
+            )
+        }
         val started = System.currentTimeMillis()
         var toolMissing = false
         val progress = CompileProgress(showCommands = prefs.verboseCompile.value)
@@ -52,8 +59,8 @@ class BuildActions(
         val seconds = (System.currentTimeMillis() - started) / 1000.0
         return if (code == 0) {
             console.success(
-                "Compilation finished in %s (%d files compiled, %d reused).".format(
-                    formatDuration(seconds.toLong()), progress.compiled, progress.reused,
+                "Compilation finished in %s (%d files checked for libraries, %d compiled, %d reused).".format(
+                    formatDuration(seconds.toLong()), progress.checked, progress.compiled, progress.reused,
                 ),
             )
             buildPath

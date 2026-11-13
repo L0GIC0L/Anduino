@@ -45,7 +45,9 @@ class WorkService : Service() {
         }
         wakeLock = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "anduino:job")
-            .apply { acquire(60 * 60 * 1000L) }
+            // First builds of large sketches can run for a long time; the service stops (and
+            // releases this) as soon as the job ends.
+            .apply { acquire(4 * 60 * 60 * 1000L) }
         val jobs = (application as AnduinoApp).container.jobs
         scope.launch {
             jobs.current.collect { state ->
