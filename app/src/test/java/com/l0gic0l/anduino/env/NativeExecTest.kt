@@ -126,6 +126,10 @@ class NativeExecTest {
                 assertEquals("[1, 2]", py.second.trim())
             }
             val nativeRuns = server.commandsRun
+            // A host newer than the shipped glibc (2.39) has tools that need the proot
+            // rerun; on a matching host (as on the phone) they must have run natively.
+            if (hostGlibc() == "glibc 2.39") assertTrue(logs.toString(), logs.isEmpty())
+            logs.clear()
 
             // A non-compiler step failing natively is rerun by the client (here: same result).
             val failing = relay("/usr/bin/env", "bash", "-c", "echo held-back; exit 3")
@@ -145,4 +149,9 @@ class NativeExecTest {
             server.stop()
         }
     }
+
+    private fun hostGlibc(): String =
+        runCatching {
+            ProcessBuilder("getconf", "GNU_LIBC_VERSION").start().inputStream.bufferedReader().readText().trim()
+        }.getOrDefault("")
 }
