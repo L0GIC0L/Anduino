@@ -33,19 +33,26 @@ class NativeExecTest {
             recipe.c.combine.pattern.linux="{compiler.path}{compiler.c.elf.cmd}" -o "{build.path}/x.elf"
             recipe.hooks.prebuild.1.pattern=/usr/bin/env bash -c "true"
             recipe.objcopy.bin.pattern="{tools.esptool_py.path}/esptool" elf2image
+            recipe.objcopy.bin.pattern_args=--chip esp32
         """.trimIndent()
         val out = PlatformOverrides.generate(platformTxt, "/opt/anduino/bin/anduino-run")!!
         val lines = out.lines().filter { it.isNotBlank() }
         assertEquals(PlatformOverrides.MARKER, lines[0])
+        val c = "/opt/anduino/bin/anduino-run"
         assertEquals(
             listOf(
-                "recipe.c.o.pattern=/opt/anduino/bin/anduino-run \"{compiler.path}{compiler.c.cmd}\" {compiler.c.flags} \"{source_file}\" -o \"{object_file}\"",
-                "recipe.cpp.o.pattern=/opt/anduino/bin/anduino-run \"{compiler.path}{compiler.cpp.cmd}\" {compiler.cpp.flags} \"{source_file}\" -o \"{object_file}\"",
-                "recipe.ar.pattern=/opt/anduino/bin/anduino-run \"{compiler.path}{compiler.ar.cmd}\" cr \"{archive_file_path}\" \"{object_file}\"",
-                "recipe.c.combine.pattern.linux=/opt/anduino/bin/anduino-run \"{compiler.path}{compiler.c.elf.cmd}\" -o \"{build.path}/x.elf\"",
+                "recipe.c.o.pattern=$c \"{compiler.path}{compiler.c.cmd}\" {compiler.c.flags} \"{source_file}\" -o \"{object_file}\"",
+                "recipe.cpp.o.pattern=$c \"{compiler.path}{compiler.cpp.cmd}\" {compiler.cpp.flags} \"{source_file}\" -o \"{object_file}\"",
+                "recipe.ar.pattern=$c \"{compiler.path}{compiler.ar.cmd}\" cr \"{archive_file_path}\" \"{object_file}\"",
+                "recipe.c.combine.pattern.linux=$c \"{compiler.path}{compiler.c.elf.cmd}\" -o \"{build.path}/x.elf\"",
+                "recipe.hooks.prebuild.1.pattern=$c /usr/bin/env bash -c \"true\"",
+                "recipe.objcopy.bin.pattern=$c \"{tools.esptool_py.path}/esptool\" elf2image",
             ),
             lines.drop(1),
         )
+        // Windows-only variants, *_args helpers and already prefixed values are left alone.
+        assertTrue(lines.none { it.contains(".windows") || it.contains("pattern_args") })
+        assertNull(PlatformOverrides.generate("recipe.c.o.pattern=$c gcc\n", c))
         assertNull(PlatformOverrides.generate("name=Nothing to do\n", "/x"))
     }
 
@@ -105,12 +112,34 @@ class NativeExecTest {
             assertTrue(pre.second.contains("int add"))
             assertEquals(3, server.commandsRun)
 
+            // Core hooks: a Linux path to env, bash, and a command found via PATH.
+            File(work, "a.txt").writeText("hook")
+            val hook = relay("/usr/bin/env", "bash", "-c", "cp a.txt b.txt && echo hook-ok")
+            assertEquals(hook.third, 0, hook.first)
+            assertEquals("hook-ok", hook.second.trim())
+            assertEquals("hook", File(work, "b.txt").readText())
+
+            // A bare program name, as in "python3 gen_esp32part.py".
+            if (File("/usr/bin/python3").exists()) {
+                val py = relay("python3", "-c", "import json, sys; print(json.dumps([1, 2]))")
+                assertEquals(py.third, 0, py.first)
+                assertEquals("[1, 2]", py.second.trim())
+            }
+            val nativeRuns = server.commandsRun
+
+            // A non-compiler step failing natively is rerun by the client (here: same result).
+            val failing = relay("/usr/bin/env", "bash", "-c", "echo held-back; exit 3")
+            assertEquals(3, failing.first)
+            assertEquals("held-back", failing.second.trim()) // printed once, by the rerun
+            assertTrue(logs.toString(), logs.single().contains("failed natively"))
+            logs.clear()
+
             // Not a dynamic ELF: the server declines and the client runs it itself.
             val script = File(work, "hello.sh").apply { writeText("#!/bin/sh\necho fallback-ok\n"); setExecutable(true) }
             val fb = relay(script.path)
             assertEquals(0, fb.first)
             assertEquals("fallback-ok", fb.second.trim())
-            assertEquals(3, server.commandsRun)
+            assertEquals(nativeRuns + 1, server.commandsRun)
             assertTrue(logs.toString(), logs.isEmpty())
         } finally {
             server.stop()

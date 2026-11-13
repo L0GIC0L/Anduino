@@ -87,6 +87,22 @@ class NativeExec(
             }
         }
 
+    /**
+     * The file a command's argv[0] refers to, seen from outside proot: shared paths stay
+     * as they are, Linux paths such as /usr/bin/env map into the rootfs, and bare names
+     * such as python3 are looked up in the rootfs PATH. Null if there is no such file.
+     */
+    fun resolveProgram(argv0: String): File? {
+        if (!argv0.contains('/')) {
+            return listOf("usr/local/bin", "usr/bin", "bin", "usr/sbin", "sbin")
+                .map { File("$root/$it", argv0) }
+                .firstOrNull { it.isFile }
+        }
+        if (!argv0.startsWith("/")) return null
+        if (argv0.startsWith("$root/")) return File(argv0).takeIf { it.exists() }
+        return File(root + argv0).takeIf { it.exists() } ?: File(argv0).takeIf { it.exists() }
+    }
+
     /** True for a dynamically linked ELF built for this device (what the loader can run). */
     fun canRun(file: File): Boolean = isDynamicElf(file, expectedMachine)
 

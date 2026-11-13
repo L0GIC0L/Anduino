@@ -88,8 +88,8 @@ class ExecServer(
     }
 
     private fun run(argv: List<String>, guestCwd: String, clientIn: InputStream, out: DataOutputStream) {
-        val program = File(argv[0])
-        if (disabled || !program.isAbsolute || !native.canRun(program)) {
+        val program = native.resolveProgram(argv[0])
+        if (disabled || program == null || !native.canRun(program)) {
             sendFallback(out)
             return
         }
@@ -112,17 +112,40 @@ class ExecServer(
             }
             if (process.isAlive) process.destroyForcibly()
         }
+        // Compiler output streams live (its errors are the user's). Other steps (esptool,
+        // hooks, size) are short: their output is held back, and if they fail natively the
+        // client simply reruns them under proot, which gives the same result when the
+        // failure is genuine and a working build when it was the native environment.
+        val direct = COMPILER.containsMatchIn(program.name)
+        val held = if (direct) null else listOf(java.io.ByteArrayOutputStream(), java.io.ByteArrayOutputStream())
         val pumps = listOf(
-            thread(isDaemon = true) { pump(process.inputStream, 'O', out) },
-            thread(isDaemon = true) { pump(process.errorStream, 'E', out) },
+            thread(isDaemon = true) { pump(process.inputStream, 'O', out, held?.get(0)) },
+            thread(isDaemon = true) { pump(process.errorStream, 'E', out, held?.get(1)) },
         )
         val code = process.waitFor()
         pumps.forEach { it.join() }
         if (code == 128 + SIGSYS) {
             // Killed by Android's seccomp filter: native runs can't work on this device.
-            disableBecause("a native compiler process was stopped by the system (SIGSYS)")
+            disableBecause("a native process was stopped by the system (SIGSYS)")
             sendFallback(out)
             return
+        }
+        if (held != null) {
+            if (code != 0) {
+                log("${program.name} failed natively (exit $code); running it under proot instead.")
+                sendFallback(out)
+                return
+            }
+            synchronized(out) {
+                for ((i, type) in listOf('O', 'E').withIndex()) {
+                    val bytes = held[i].toByteArray()
+                    if (bytes.isEmpty()) continue
+                    out.writeByte(type.code)
+                    out.writeInt(bytes.size)
+                    out.write(bytes)
+                }
+                out.flush()
+            }
         }
         synchronized(out) {
             out.writeByte('X'.code)
@@ -140,12 +163,16 @@ class ExecServer(
         return File(native.root)
     }
 
-    private fun pump(stream: InputStream, type: Char, out: DataOutputStream) {
+    private fun pump(stream: InputStream, type: Char, out: DataOutputStream, hold: java.io.ByteArrayOutputStream?) {
         val buf = ByteArray(16 * 1024)
         try {
             while (true) {
                 val n = stream.read(buf)
                 if (n < 0) break
+                if (hold != null) {
+                    hold.write(buf, 0, n)
+                    continue
+                }
                 synchronized(out) {
                     out.writeByte(type.code)
                     out.writeInt(n)
@@ -182,5 +209,8 @@ class ExecServer(
 
     companion object {
         private const val SIGSYS = 31
+
+        /** gcc, g++, cc, c++, as, ld, ar with any target prefix (xtensa-esp32-elf-g++, avr-gcc, ...). */
+        private val COMPILER = Regex("""(^|-)(gcc|g\+\+|cc|c\+\+|cpp|as|ld|ar|gcc-ar|clang|clang\+\+)(-[0-9.]+)?$""")
     }
 }

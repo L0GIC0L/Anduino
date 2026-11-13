@@ -54,14 +54,17 @@ without changing the rest of the app.
 * **Compilation** is exactly `arduino-cli compile`, so build options, partition schemes,
   `build_opt.h`, libraries and examples behave as on a desktop.
 * **Fast native compiler.** proot intercepts every file lookup; ESP32 builds search ~400
-  include folders per header, which made each compiler run ~30x slower. So the heavy
-  recipes (compile, preprocess, archive, link) are prefixed, via `platform.local.txt`,
+  include folders per header, which made each compiler run ~30x slower. So every build
+  recipe (compile, preprocess, archive, link, esptool/objcopy, size and the core's
+  bash/python hooks) is prefixed, via `platform.local.txt`,
   with a tiny relay (`native/run_client.c`). It hands each command to the app, which
   runs it *outside* proot through glibc's own loader shipped in the APK
   (`libanduino-ld.so`, allowed to exec) plus an exec shim (`native/exec_shim.c`) that
   routes the compiler's sub-processes the same way — the glibc counterpart of
   termux-exec's "system linker exec". Anything that can't run natively falls back to
-  proot automatically; Settings has a switch to turn it off.
+  proot automatically (non-compiler steps that fail natively are rerun under proot);
+  only arduino-cli's own coordination stays in proot. Settings has a switch to turn it
+  off.
 
 ## Features
 
