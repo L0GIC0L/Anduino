@@ -24,6 +24,8 @@ cp "$WORK/tm-grammars/package/grammars/cpp.json" "$OUT/cpp.tmLanguage.json"
 cp "$WORK/tm-grammars/package/grammars/cpp-macro.json" "$OUT/cpp-macro.tmLanguage.json"
 cp "$WORK/tm-themes/package/themes/dark-plus.json" "$OUT/dark-plus.json"
 cp "$WORK/tm-themes/package/themes/light-plus.json" "$OUT/light-plus.json"
+# The editor's regex engine (joni) rejects a few look-behinds; rewrite them equivalently.
+python3 "$ROOT/scripts/fix-grammar-for-joni.py" "$OUT/cpp.tmLanguage.json" "$OUT/cpp-macro.tmLanguage.json"
 curl -fsSL "https://raw.githubusercontent.com/microsoft/vscode/main/extensions/cpp/language-configuration.json" \
   -o "$OUT/cpp-language-configuration.json"
 
