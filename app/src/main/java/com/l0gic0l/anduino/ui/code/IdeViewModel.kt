@@ -1,6 +1,7 @@
 package com.l0gic0l.anduino.ui.code
 
 import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.l0gic0l.anduino.AppContainer
@@ -10,6 +11,7 @@ import com.l0gic0l.anduino.cli.Fqbn
 import com.l0gic0l.anduino.cli.LibraryExamples
 import com.l0gic0l.anduino.core.BuildActions
 import com.l0gic0l.anduino.core.JobScope
+import com.l0gic0l.anduino.sketch.SafImport
 import com.l0gic0l.anduino.sketch.SketchInfo
 import io.github.rosemoe.sora.text.Content
 import kotlinx.coroutines.Dispatchers
@@ -194,6 +196,37 @@ class IdeViewModel(private val c: AppContainer) : ViewModel() {
         openSketchNow(c.sketches.importText(fileName, text))
         refreshSketches()
         message("Imported $fileName")
+    }
+
+    /** Sketchbook → Open folder: copies a sketch folder from device storage, secrets.h and all. */
+    fun importFolder(context: Context, treeUri: Uri) = io {
+        saveAll()
+        val staging = File(context.cacheDir, "import").apply { deleteRecursively(); mkdirs() }
+        try {
+            val copied = SafImport.copyTree(context.applicationContext, treeUri, staging)
+            val dir = c.sketches.importSketchFolder(copied)
+            openSketchNow(dir)
+            refreshSketches()
+            message("Opened ${dir.name} (${dir.walkTopDown().count { it.isFile }} files copied into the sketchbook)")
+        } finally {
+            staging.deleteRecursively()
+        }
+    }
+
+    /** Add file from device: copies one file (e.g. secrets.h) into the open sketch. */
+    fun addFileFromDevice(context: Context, uri: Uri) = io {
+        val dir = _sketchDir.value ?: return@io
+        val name = SafImport.displayName(context, uri) ?: throw java.io.IOException("Can't read the file name")
+        val added = context.contentResolver.openInputStream(uri)?.use { c.sketches.importFileInto(dir, name, it) }
+            ?: throw java.io.IOException("Can't read $name")
+        _files.value = c.sketches.files(dir)
+        val index = _files.value.indexOf(added)
+        if (index >= 0) {
+            _currentIndex.value = index
+            message("Added ${added.name}")
+        } else {
+            message("Added ${added.name} to the sketch folder (not a source file, so no tab)")
+        }
     }
 
     // ------------------------------------------------------------- examples

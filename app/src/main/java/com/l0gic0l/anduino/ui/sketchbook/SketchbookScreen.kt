@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Search
@@ -47,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.l0gic0l.anduino.sketch.SafImport
 import com.l0gic0l.anduino.sketch.SketchInfo
 import com.l0gic0l.anduino.ui.code.IdeViewModel
 import com.l0gic0l.anduino.ui.code.TextInputDialog
@@ -62,12 +64,18 @@ fun SketchbookScreen(vm: IdeViewModel, onOpened: () -> Unit) {
     val context = LocalContext.current
     val openDocument = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            val name = uri.lastPathSegment?.substringAfterLast('/') ?: "imported.ino"
+            val name = SafImport.displayName(context, uri) ?: "imported.ino"
             val text = context.contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() }
             if (text != null) {
                 vm.importText(name, text)
                 onOpened()
             }
+        }
+    }
+    val openFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            vm.importFolder(context, uri)
+            onOpened()
         }
     }
     LaunchedEffect(Unit) { vm.refreshSketches() }
@@ -78,6 +86,7 @@ fun SketchbookScreen(vm: IdeViewModel, onOpened: () -> Unit) {
             TopAppBar(
                 title = { Text("Sketchbook") },
                 actions = {
+                    IconButton(onClick = { openFolder.launch(null) }) { Icon(Icons.Default.DriveFolderUpload, "Open sketch folder") }
                     IconButton(onClick = { openDocument.launch(arrayOf("*/*")) }) { Icon(Icons.Default.FileOpen, "Open .ino file") }
                 },
             )

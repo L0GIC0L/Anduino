@@ -12,8 +12,8 @@ android {
         applicationId = "com.l0gic0l.anduino"
         minSdk = 29
         targetSdk = 37
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.1.4"
 
         // The bundled proot binaries exist for these two ABIs only
         // (arm64 = phones/foldables, x86_64 = emulator).
@@ -76,6 +76,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.window)
+    implementation(libs.androidx.documentfile)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

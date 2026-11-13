@@ -59,7 +59,7 @@ without changing the rest of the app.
 | Area | Status |
 |---|---|
 | Editor: C++ syntax highlighting, line numbers, bracket matching, undo/redo per tab, find & replace, keyword/identifier completion, symbol bar above the keyboard, autosave | Done |
-| Multiple tabs (.ino/.h/.cpp), new/rename/delete sketch, open .ino from other apps | Done |
+| Multiple tabs (.ino/.h/.cpp), new/rename/delete sketch; open a whole sketch folder from phone storage (keeps secrets.h, src/); add a file from storage as a tab; open a single .ino | Done |
 | Verify / Upload with streamed compiler output, cancel | Done |
 | Board selector over all installed cores, board options (IDE "Tools" menu: CPU, flash, partition scheme, PSRAM, USB mode...) | Done |
 | Boards Manager (install / update / remove / pick version, extra index URLs with presets) | Done |

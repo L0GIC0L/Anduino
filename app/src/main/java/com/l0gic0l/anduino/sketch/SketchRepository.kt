@@ -2,6 +2,7 @@ package com.l0gic0l.anduino.sketch
 
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.time.LocalDate
 import java.time.format.TextStyle
 import java.util.Locale
@@ -52,6 +53,37 @@ class SketchRepository(val sketchbook: File) {
         val oldMain = File(dest, "${source.name}.ino")
         if (oldMain.exists() && source.name != name) oldMain.renameTo(File(dest, "$name.ino"))
         return dest
+    }
+
+    /**
+     * Imports a whole sketch folder (e.g. copied from the phone's storage), keeping every
+     * file in it such as secrets.h or a src/ folder. Arduino requires the main file to be
+     * `<folder>.ino`: the folder's own .ino is preferred, otherwise the first one, and the
+     * imported sketch is named after it.
+     */
+    fun importSketchFolder(source: File): File {
+        val inos = source.listFiles { f -> f.isFile && f.extension.equals("ino", ignoreCase = true) }
+            ?.sortedBy { it.name.lowercase() }
+            .orEmpty()
+        require(inos.isNotEmpty()) { "\"${source.name}\" has no .ino file, so it isn't an Arduino sketch folder" }
+        val main = inos.firstOrNull { it.nameWithoutExtension == source.name } ?: inos.first()
+        val name = uniqueName(sanitize(main.nameWithoutExtension))
+        val dest = File(sketchbook, name)
+        source.copyRecursively(dest, overwrite = false)
+        val copiedMain = File(dest, main.name)
+        val wanted = File(dest, "$name.ino")
+        if (copiedMain != wanted) copiedMain.renameTo(wanted)
+        return dest
+    }
+
+    /** Copies a file from elsewhere into a sketch (Add file from device). */
+    fun importFileInto(sketchDir: File, fileName: String, input: InputStream): File {
+        val name = File(fileName).name.trim()
+        require(name.isNotEmpty() && !name.startsWith(".")) { "Invalid file name \"$fileName\"" }
+        val target = File(sketchDir, name)
+        if (target.exists()) throw IOException("$name already exists in this sketch; delete that tab first")
+        target.outputStream().use { input.copyTo(it) }
+        return target
     }
 
     /** Creates a sketch from a single file's text (e.g. an .ino opened from another app). */

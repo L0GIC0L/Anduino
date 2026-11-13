@@ -1,6 +1,8 @@
 package com.l0gic0l.anduino.ui.code
 
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -126,6 +128,12 @@ fun CodeScreen(
     var panelOpen by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val addFileFromDevice = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.addFileFromDevice(context, uri)
+    }
+    val openFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) vm.importFolder(context, uri)
+    }
 
     // Autosave like IDE 2: when the app goes to the background or this screen is left.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.saveAllAsync() }
@@ -162,7 +170,13 @@ fun CodeScreen(
                         DropdownMenuItem(text = { Text("New sketch") }, onClick = { menu = false; dialog = CodeDialog.NewSketch })
                         DropdownMenuItem(text = { Text("Sketchbook & examples") }, onClick = { menu = false; onOpenSketchbook() })
                         HorizontalDivider()
+                        DropdownMenuItem(text = { Text("Open sketch folder…") }, onClick = { menu = false; openFolder.launch(null) })
+                        HorizontalDivider()
                         DropdownMenuItem(text = { Text("New tab (file)") }, onClick = { menu = false; dialog = CodeDialog.NewFile })
+                        DropdownMenuItem(
+                            text = { Text("Add file from device…") },
+                            onClick = { menu = false; addFileFromDevice.launch(arrayOf("*/*")) },
+                        )
                         DropdownMenuItem(
                             text = { Text("Delete this tab") },
                             enabled = currentIndex > 0,
