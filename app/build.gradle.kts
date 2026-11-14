@@ -12,8 +12,8 @@ android {
         applicationId = "com.l0gic0l.anduino"
         minSdk = 29
         targetSdk = 37
-        versionCode = 12
-        versionName = "0.2.4"
+        versionCode = 13
+        versionName = "0.2.5"
 
         // The bundled proot binaries exist for these two ABIs only
         // (arm64 = phones/foldables, x86_64 = emulator).

@@ -113,11 +113,12 @@ class LinuxEnv(context: Context) {
             "USER" to "root",
             "LANG" to "C.UTF-8",
             "TERM" to "dumb",
-            "TMPDIR" to "/tmp",
             "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         )
         // arduino-cli works with shared paths, so every path it puts on a compiler command
-        // line is valid outside proot as well (the native fast path needs that).
+        // line is valid outside proot as well (the native fast path needs that). That
+        // includes its temporary files: the sketch is preprocessed into $TMPDIR/<n>/.
+        env["TMPDIR"] = sharedPath("/tmp")
         env["ARDUINO_DIRECTORIES_DATA"] = sharedPath("/root/.arduino15")
         env["ARDUINO_DIRECTORIES_DOWNLOADS"] = sharedPath("/root/.arduino15/staging")
         env["ARDUINO_DIRECTORIES_USER"] = sharedPath(SKETCHBOOK)
