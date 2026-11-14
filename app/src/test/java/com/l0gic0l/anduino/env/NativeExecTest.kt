@@ -228,6 +228,42 @@ class NativeExecTest {
         }
     }
 
+    /**
+     * arduino-cli installs toolchains under proot, which stores hard links (e.g.
+     * xtensa-esp-elf-g++ = xtensa-esp-elf-c++) as symlinks into <rootfs>/.l2s. Run
+     * natively, gcc resolved its own path into .l2s and failed with "cannot execute
+     * 'cc1plus'" (Pixel Fold, ESP32 core 3.3.12). Reproduced with the host gcc: it must
+     * find the cc1 of its own (relocated) installation, not fall back to the system one.
+     */
+    @Test
+    fun gccInstalledThroughProotHardLinksFindsItsOwnPrograms() {
+        val gcc = File("/usr/bin/gcc").canonicalFile
+        assumeTrue(gcc.isFile && System.getProperty("os.name") == "Linux" && System.getProperty("os.arch").orEmpty() in setOf("amd64", "x86_64"))
+        val systemCc1 = ProcessBuilder(gcc.path, "-print-prog-name=cc1").start().inputStream.bufferedReader().readText().trim()
+        val m = Regex("""/libexec/gcc/([^/]+)/([^/]+)/cc1$""").find(systemCc1)
+        assumeTrue("unexpected gcc layout: $systemCc1", m != null && File(systemCc1).isFile)
+        val (machine, version) = m!!.destructured
+
+        val rootfs = tmp.newFolder("rootfs3")
+        for (d in listOf("lib", "usr", "bin")) Files.createSymbolicLink(Paths.get(rootfs.path, d), Paths.get("/$d"))
+        // The toolchain as proot leaves it: bin/gcc is a symlink to the real file in .l2s.
+        val l2s = File(rootfs, ".l2s/.l2s.gcc0002").apply { parentFile.mkdirs() }
+        gcc.copyTo(l2s)
+        l2s.setExecutable(true)
+        val bin = File(rootfs, "root/tc/bin").apply { mkdirs() }
+        Files.createSymbolicLink(File(bin, "gcc").toPath(), l2s.toPath())
+        val ownCc1 = File(rootfs, "root/tc/libexec/gcc/$machine/$version/cc1").apply { parentFile.mkdirs() }
+        Files.createSymbolicLink(ownCc1.toPath(), Paths.get(systemCc1))
+
+        val native = NativeExec(jni.absoluteFile, rootfs, File(tmp.root, "glibc3"), "x86_64-linux-gnu")
+        native.install()
+        val driver = File(bin, "gcc").path
+        val p = native.processBuilder(driver, driver, listOf("-print-prog-name=cc1"), rootfs).redirectErrorStream(true).start()
+        val found = p.inputStream.bufferedReader().readText().trim()
+        assertEquals(found, 0, p.waitFor())
+        assertEquals(ownCc1.canonicalFile, File(found).canonicalFile)
+    }
+
     private fun hostGlibc(): String =
         runCatching {
             ProcessBuilder("getconf", "GNU_LIBC_VERSION").start().inputStream.bufferedReader().readText().trim()

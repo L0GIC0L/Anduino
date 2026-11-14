@@ -237,7 +237,8 @@ class ExecServer(
         /** Compiler messages that mean the environment failed, not the source being compiled. */
         private val ENVIRONMENT_ERRORS = Regex(
             """Bad system call|signal terminated program|error while loading shared libraries|""" +
-                """cannot execute binary file|Exec format error|cannot open shared object file""",
+                """cannot execute binary file|Exec format error|cannot open shared object file|""" +
+                """cannot execute '""",
         )
 
         /** gcc, g++, cc, c++, as, ld, ar with any target prefix (xtensa-esp32-elf-g++, avr-gcc, ...). */

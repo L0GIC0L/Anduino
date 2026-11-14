@@ -41,9 +41,12 @@ typedef int (*spawn_fn)(pid_t *, const char *, const posix_spawn_file_actions_t 
 typedef ssize_t (*readlink_fn)(const char *, char *, size_t);
 typedef ssize_t (*readlinkat_fn)(int, const char *, char *, size_t);
 
+typedef char *(*realpath_fn)(const char *, char *);
+
 static spawn_fn real_posix_spawn;
 static readlink_fn real_readlink;
 static readlinkat_fn real_readlinkat;
+static realpath_fn real_realpath;
 
 /*
  * Android's seccomp filter for apps traps system calls it doesn't allow (SIGSYS with
@@ -70,6 +73,7 @@ __attribute__((constructor)) static void shim_init(void) {
     real_posix_spawn = (spawn_fn)dlsym(RTLD_NEXT, "posix_spawn");
     real_readlink = (readlink_fn)dlsym(RTLD_NEXT, "readlink");
     real_readlinkat = (readlinkat_fn)dlsym(RTLD_NEXT, "readlinkat");
+    real_realpath = (realpath_fn)dlsym(RTLD_NEXT, "realpath");
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = on_sigsys;
@@ -356,4 +360,51 @@ ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t size) {
         if (r != -2) return r;
     }
     return real_readlinkat(dirfd, path, buf, size);
+}
+
+/*
+ * Toolchains are installed by arduino-cli under proot, whose link2symlink extension
+ * stores each hard link (xtensa-esp-elf-g++ = xtensa-esp-elf-c++, ld = ld.bfd, ...) as a
+ * symlink into <rootfs>/.l2s and hides that from programs running under proot. Natively
+ * the symlink is visible: gcc would resolve its own path to <rootfs>/.l2s/... and look
+ * for cc1plus next to it. Like proot, treat such a link as the file itself: resolve the
+ * directory and keep the link's own name.
+ */
+static int in_l2s(const char *p) {
+    const char *root = cfg("ANDUINO_ROOT");
+    if (!root || !p) return 0;
+    size_t n = strlen(root);
+    return strncmp(p, root, n) == 0 && strncmp(p + n, "/.l2s/", 6) == 0;
+}
+
+char *realpath(const char *path, char *resolved) {
+    if (!real_realpath) real_realpath = (realpath_fn)dlsym(RTLD_NEXT, "realpath");
+    char *r = real_realpath(path, resolved);
+    if (!r || !in_l2s(r)) return r;
+    char dir[PATH_MAX], rdir[PATH_MAX];
+    const char *slash = strrchr(path, '/'), *name;
+    if (!slash) {
+        strcpy(dir, ".");
+        name = path;
+    } else {
+        size_t len = slash == path ? 1 : (size_t)(slash - path);
+        if (len >= PATH_MAX) return r;
+        memcpy(dir, path, len);
+        dir[len] = 0;
+        name = slash + 1;
+    }
+    if (!*name || !real_realpath(dir, rdir)) return r;
+    char out[PATH_MAX];
+    int n = snprintf(out, sizeof out, "%s/%s", strcmp(rdir, "/") == 0 ? "" : rdir, name);
+    if (n < 0 || n >= PATH_MAX) return r;
+    if (resolved) return strcpy(resolved, out);
+    free(r);
+    return strdup(out);
+}
+
+char *canonicalize_file_name(const char *path) { return realpath(path, NULL); }
+
+char *__realpath_chk(const char *path, char *resolved, size_t resolvedlen) {
+    (void)resolvedlen; /* callers pass PATH_MAX-sized buffers, as realpath() requires */
+    return realpath(path, resolved);
 }

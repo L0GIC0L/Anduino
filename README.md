@@ -73,6 +73,10 @@ without changing the rest of the app.
   The shipped libc also has its `clone3` call disabled (`scripts/patch-glibc.py`, as
   Termux does for its glibc). `NativeExecTest` checks all of this under an Android-style
   seccomp filter.
+  Toolchains are installed by arduino-cli under proot, whose link2symlink extension turns
+  hard links (`xtensa-esp-elf-g++` = `xtensa-esp-elf-c++`, `ld` = `ld.bfd`) into symlinks
+  into `<rootfs>/.l2s` and hides them. The shim hides them the same way for native runs
+  (`realpath` keeps the link's own name), so gcc finds `cc1plus` next to itself.
 * Every build ends with a short report: how many steps ran natively or under proot, the
   time spent in each phase, and on failure the first error lines.
 
