@@ -29,6 +29,12 @@ class NativeExec(
     val shim = File(nativeLibDir, "libanduino-shim.so")
     private val client = File(nativeLibDir, "libanduino-run.so")
 
+    /** ptrace supervisor answering system calls Android's seccomp filter traps (native/trap.c). */
+    private val trap = File(nativeLibDir, "libanduino-trap.so")
+
+    /** Where the supervisor appends the numbers of trapped system calls. */
+    val trapLog = File(glibcDir.parentFile, "native-trap.log")
+
     val root: String get() = rootfs.absolutePath
 
     val libraryPath: String
@@ -69,14 +75,27 @@ class NativeExec(
         "ANDUINO_SHIM" to shim.path,
         "ANDUINO_ROOT" to root,
         "ANDUINO_SELF_EXE" to program,
+        "ANDUINO_TRAP_LOG" to trapLog.path,
     )
 
     /** Command line that runs [program] through the loader with [args] (argv[0] excluded). */
     fun command(program: String, argv0: String, args: List<String>): List<String> =
-        listOf(
+        (if (trap.isFile) listOf(trap.path) else emptyList()) + listOf(
             loader.path, "--library-path", libraryPath, "--preload", shim.path,
             "--argv0", argv0, program,
         ) + args
+
+    /** System calls Android trapped (and the supervisor answered) since [clearTrapLog], by name. */
+    fun trappedSyscalls(): List<String> =
+        runCatching { trapLog.readLines() }.getOrDefault(emptyList())
+            .mapNotNull { it.trim().toIntOrNull() }.distinct().sorted()
+            .map { nr -> syscallNames[nr]?.let { "$it ($nr)" } ?: "#$nr" }
+
+    fun clearTrapLog() {
+        trapLog.delete()
+    }
+
+    private val syscallNames: Map<Int, String> get() = if (expectedMachine == EM_X86_64) X86_64_NAMES else ARM64_NAMES
 
     fun processBuilder(program: String, argv0: String, args: List<String>, cwd: File): ProcessBuilder =
         ProcessBuilder(command(program, argv0, args)).apply {
@@ -115,6 +134,18 @@ class NativeExec(
         private const val EM_X86_64 = 62
         private const val EM_AARCH64 = 183
         private const val PT_INTERP = 3
+
+        /** Names of system calls glibc may make that Android's filter is known to refuse. */
+        private val ARM64_NAMES = mapOf(
+            99 to "set_robust_list", 100 to "get_robust_list", 291 to "statx", 293 to "rseq",
+            424 to "pidfd_send_signal", 434 to "pidfd_open", 435 to "clone3", 436 to "close_range",
+            437 to "openat2", 439 to "faccessat2", 441 to "epoll_pwait2", 449 to "futex_waitv",
+            452 to "fchmodat2", 453 to "map_shadow_stack",
+        )
+        private val X86_64_NAMES = mapOf(
+            273 to "set_robust_list", 274 to "get_robust_list", 332 to "statx", 334 to "rseq",
+            435 to "clone3", 436 to "close_range", 439 to "faccessat2",
+        )
 
         /** jniLibs file -> soname the toolchains ask for. */
         val GLIBC_LIBS = listOf(

@@ -59,6 +59,7 @@ class FastBuild(
     /** Prepares everything for a build; returns true if compilers will run natively. */
     fun prepare(enabled: Boolean): Boolean {
         server.resetStats()
+        native.clearTrapLog()
         offReason = when {
             !enabled -> "off in Settings"
             !native.isAvailable -> "not included in this app build"
@@ -79,11 +80,13 @@ class FastBuild(
     fun summary(): String {
         offReason?.let { return "Fast native compiler: $it. Every step ran under proot (slow)." }
         val reran = server.fallbacks
-        val native = server.commandsRun - reran
-        val sb = StringBuilder("Fast native compiler: $native steps ran natively")
+        val ranNatively = server.commandsRun - reran
+        val sb = StringBuilder("Fast native compiler: $ranNatively steps ran natively")
         if (server.declined > 0) sb.append(", ${server.declined} could not (ran under proot)")
         if (reran > 0) sb.append(", $reran failed natively and were rerun under proot (${server.fallbackReasons.take(3).joinToString("; ")})")
         server.disabledReason?.let { sb.append("; then turned off: $it") }
+        val trapped = native.trappedSyscalls()
+        if (trapped.isNotEmpty()) sb.append(". System calls Android blocked (answered \"not supported\"): ${trapped.joinToString()}")
         return sb.append('.').toString()
     }
 
@@ -97,7 +100,8 @@ class FastBuild(
             val output = p.inputStream.bufferedReader().readText()
             val code = p.waitFor()
             if (code != 0) {
-                selfTestError = "exit $code: ${output.trim().take(300)}"
+                val trapped = native.trappedSyscalls().takeIf { it.isNotEmpty() }?.let { "; blocked system calls: ${it.joinToString()}" }.orEmpty()
+                selfTestError = "exit $code: ${output.trim().take(300)}$trapped"
                 console.info("Fast native compiler unavailable on this device ($selfTestError)")
             }
             code == 0

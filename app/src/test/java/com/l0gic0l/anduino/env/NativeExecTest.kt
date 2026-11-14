@@ -172,8 +172,9 @@ class NativeExecTest {
 
     /**
      * Android's app seccomp policy traps system calls it doesn't allow (SIGSYS). This jail
-     * traps clone3 and faccessat2 the same way; with the shipped glibc (clone3 disabled)
-     * and the shim's SIGSYS handler, threads, posix_spawn and the compiler still work.
+     * traps set_robust_list (made by glibc's startup, which killed even `true` on a Pixel
+     * Fold), clone3 and faccessat2 the same way. Through the trap supervisor, startup,
+     * threads, posix_spawn and the compiler still work, and the trapped calls are logged.
      */
     @Test
     fun survivesAndroidStyleSeccompTraps() {
@@ -197,11 +198,20 @@ class NativeExecTest {
             return p.exitValue() to out
         }
 
-        // Without the shim, the host compiler dies as it would on a phone.
+        // The device's failed self-test, reproduced: without the supervisor even `true` dies.
+        val bareLoader = native.command("/usr/bin/true", "true", emptyList()).dropWhile { it.contains("libanduino-trap") }
+        val noTrap = ProcessBuilder(listOf(jail.path) + bareLoader).directory(work).apply {
+            environment().putAll(native.environment("/usr/bin/true"))
+        }.start()
+        assertEquals(128 + 31, noTrap.waitFor())
+        native.clearTrapLog()
+        assertEquals(0 to "", jailed("/usr/bin/true"))
+        assertEquals(listOf("set_robust_list (273)"), native.trappedSyscalls())
+
+        // Run directly, the host compiler is killed at startup as it would be on the phone.
         File(work, "ok.c").writeText("int add(int a, int b) { return a + b; }\n")
-        val bare = ProcessBuilder(jail.path, gcc.path, "-c", "ok.c", "-o", "bare.o").directory(work).redirectErrorStream(true).start()
-        val bareOut = bare.inputStream.bufferedReader().readText()
-        assertTrue(bareOut, bare.waitFor() != 0 && bareOut.contains("Bad system call"))
+        val bare = ProcessBuilder(jail.path, gcc.path, "-c", "ok.c", "-o", "bare.o").directory(work).start()
+        assertEquals(128 + 31, bare.waitFor())
 
         val cc = jailed(gcc.path, "-c", "ok.c", "-o", "ok.o")
         assertEquals(cc.second, 0, cc.first)

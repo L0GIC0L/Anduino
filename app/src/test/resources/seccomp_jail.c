@@ -5,10 +5,12 @@
 #include <stdio.h>
 #include <sys/prctl.h>
 #include <unistd.h>
-/* Traps clone3 (435) and faccessat2 (439) like Android's app seccomp policy, then execs argv[1]. */
+/* Traps set_robust_list (273), clone3 (435) and faccessat2 (439) with SIGSYS, as Android's app
+ * seccomp policy does with calls bionic doesn't use, then execs argv[1]. x86_64 numbers. */
 int main(int argc, char **argv) {
     struct sock_filter f[] = {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 273, 3, 0),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 435, 2, 0),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 439, 1, 0),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),

@@ -65,11 +65,14 @@ without changing the rest of the app.
   proot automatically (non-compiler steps that fail natively, and compilers killed by
   the system, are rerun under proot); only arduino-cli's own coordination stays in
   proot. Settings has a switch to turn it off.
-  Android's seccomp filter kills programs that use system calls it doesn't allow, which
-  proot would otherwise absorb: the shipped libc has its `clone3` call disabled
-  (`scripts/patch-glibc.py`, as Termux does for its glibc) and the shim answers other
-  trapped calls with ENOSYS so glibc uses the older call. `NativeExecTest` checks this
-  under an Android-style seccomp filter.
+  Android's seccomp filter kills programs that use system calls bionic doesn't (glibc's
+  startup makes some), which proot would otherwise absorb. Native runs therefore go
+  through `libanduino-trap.so` (`native/trap.c`), a tiny freestanding ptrace supervisor
+  that does only that part of proot's job: a trapped call gets "not supported" (ENOSYS)
+  and glibc carries on. Nothing else is intercepted, so it costs no measurable time.
+  The shipped libc also has its `clone3` call disabled (`scripts/patch-glibc.py`, as
+  Termux does for its glibc). `NativeExecTest` checks all of this under an Android-style
+  seccomp filter.
 * Every build ends with a short report: how many steps ran natively or under proot, the
   time spent in each phase, and on failure the first error lines.
 
