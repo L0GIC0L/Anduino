@@ -10,6 +10,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.security.SecureRandom
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 /**
@@ -32,8 +33,24 @@ class ExecServer(
     /** Set when native runs proved unusable on this device; from then on everything falls back. */
     @Volatile var disabled = false
 
-    @Volatile var commandsRun = 0
+    private val started = AtomicInteger()
+    private val reran = AtomicInteger()
+    private val refused = AtomicInteger()
+
+    /** Commands started natively since [resetStats]. */
+    val commandsRun: Int get() = started.get()
+
+    /** Commands handed back to the client to run under proot after failing natively. */
+    val fallbacks: Int get() = reran.get()
+
+    /** Commands the server could not run natively at all (scripts, static programs). */
+    val declined: Int get() = refused.get()
+
+    /** Why native mode was turned off, if it was. */
+    @Volatile var disabledReason: String? = null
         private set
+
+    private val reasons = LinkedHashSet<String>()
 
     val isRunning: Boolean get() = server?.isClosed == false
 
@@ -90,6 +107,7 @@ class ExecServer(
     private fun run(argv: List<String>, guestCwd: String, clientIn: InputStream, out: DataOutputStream) {
         val program = native.resolveProgram(argv[0])
         if (disabled || program == null || !native.canRun(program)) {
+            refused.incrementAndGet()
             sendFallback(out)
             return
         }
@@ -100,7 +118,7 @@ class ExecServer(
             sendFallback(out)
             return
         }
-        commandsRun++
+        started.incrementAndGet()
         process.outputStream.close()
         // The client closing its end (build cancelled) kills the command.
         thread(isDaemon = true, name = "native-exec-watch") {
@@ -112,48 +130,67 @@ class ExecServer(
             }
             if (process.isAlive) process.destroyForcibly()
         }
-        // Compiler output streams live (its errors are the user's). Other steps (esptool,
-        // hooks, size) are short: their output is held back, and if they fail natively the
-        // client simply reruns them under proot, which gives the same result when the
-        // failure is genuine and a working build when it was the native environment.
-        val direct = COMPILER.containsMatchIn(program.name)
-        val held = if (direct) null else listOf(java.io.ByteArrayOutputStream(), java.io.ByteArrayOutputStream())
+        // Output is held until the command ends: if it failed because of the native
+        // environment rather than its input, the client reruns it under proot and nothing
+        // is printed twice. Commands are short, so nothing is lost by not streaming.
+        val held = listOf(java.io.ByteArrayOutputStream(), java.io.ByteArrayOutputStream())
         val pumps = listOf(
-            thread(isDaemon = true) { pump(process.inputStream, 'O', out, held?.get(0)) },
-            thread(isDaemon = true) { pump(process.errorStream, 'E', out, held?.get(1)) },
+            thread(isDaemon = true) { pump(process.inputStream, held[0]) },
+            thread(isDaemon = true) { pump(process.errorStream, held[1]) },
         )
         val code = process.waitFor()
         pumps.forEach { it.join() }
-        if (code == 128 + SIGSYS) {
-            // Killed by Android's seccomp filter: native runs can't work on this device.
-            disableBecause("a native process was stopped by the system (SIGSYS)")
-            sendFallback(out)
-            return
-        }
-        if (held != null) {
-            if (code != 0) {
-                log("${program.name} failed natively (exit $code); running it under proot instead.")
+        if (code != 0) {
+            val reason = environmentFailure(program.name, code, held[1].toString(Charsets.UTF_8))
+            if (reason != null) {
+                fellBack(program.name, reason)
                 sendFallback(out)
                 return
             }
-            synchronized(out) {
-                for ((i, type) in listOf('O', 'E').withIndex()) {
-                    val bytes = held[i].toByteArray()
-                    if (bytes.isEmpty()) continue
-                    out.writeByte(type.code)
-                    out.writeInt(bytes.size)
-                    out.write(bytes)
-                }
-                out.flush()
-            }
         }
         synchronized(out) {
+            for ((i, type) in listOf('O', 'E').withIndex()) {
+                val bytes = held[i].toByteArray()
+                if (bytes.isEmpty()) continue
+                out.writeByte(type.code)
+                out.writeInt(bytes.size)
+                out.write(bytes)
+            }
             out.writeByte('X'.code)
             out.writeInt(4)
             out.writeInt(code)
             out.flush()
         }
     }
+
+    /**
+     * Why a failed native run should be rerun under proot, or null if the failure is the
+     * command's own (a compile error in the sketch). Only compilers are trusted to fail
+     * for real: other steps (hooks, esptool, size) are cheap to rerun.
+     */
+    private fun environmentFailure(name: String, code: Int, stderr: String): String? {
+        if (code == 128 + SIGSYS) return "stopped by Android's system-call filter (SIGSYS)"
+        if (!COMPILER.containsMatchIn(name)) return "exit $code"
+        return ENVIRONMENT_ERRORS.find(stderr)?.let { "\"${it.value}\"" }
+    }
+
+    private fun fellBack(name: String, reason: String) {
+        reran.incrementAndGet()
+        val key = "$name: $reason"
+        val first = synchronized(reasons) { reasons.add(key) }
+        if (first) log("$name failed natively ($reason); running it under proot instead.")
+    }
+
+    /** Clears the per-build counters. */
+    fun resetStats() {
+        started.set(0)
+        reran.set(0)
+        refused.set(0)
+        synchronized(reasons) { reasons.clear() }
+    }
+
+    /** Distinct "program: reason" pairs of the commands rerun under proot since [resetStats]. */
+    val fallbackReasons: List<String> get() = synchronized(reasons) { reasons.toList() }
 
     /** The client's working directory as a path outside proot. */
     private fun hostCwd(guestCwd: String): File {
@@ -163,23 +200,9 @@ class ExecServer(
         return File(native.root)
     }
 
-    private fun pump(stream: InputStream, type: Char, out: DataOutputStream, hold: java.io.ByteArrayOutputStream?) {
-        val buf = ByteArray(16 * 1024)
+    private fun pump(stream: InputStream, hold: java.io.ByteArrayOutputStream) {
         try {
-            while (true) {
-                val n = stream.read(buf)
-                if (n < 0) break
-                if (hold != null) {
-                    hold.write(buf, 0, n)
-                    continue
-                }
-                synchronized(out) {
-                    out.writeByte(type.code)
-                    out.writeInt(n)
-                    out.write(buf, 0, n)
-                    out.flush()
-                }
-            }
+            stream.copyTo(hold, 16 * 1024)
         } catch (_: IOException) {
         }
     }
@@ -195,6 +218,7 @@ class ExecServer(
     private fun disableBecause(reason: String) {
         if (!disabled) {
             disabled = true
+            disabledReason = reason
             log("Fast native compiler turned off: $reason. Builds continue the slower way.")
         }
     }
@@ -209,6 +233,12 @@ class ExecServer(
 
     companion object {
         private const val SIGSYS = 31
+
+        /** Compiler messages that mean the environment failed, not the source being compiled. */
+        private val ENVIRONMENT_ERRORS = Regex(
+            """Bad system call|signal terminated program|error while loading shared libraries|""" +
+                """cannot execute binary file|Exec format error|cannot open shared object file""",
+        )
 
         /** gcc, g++, cc, c++, as, ld, ar with any target prefix (xtensa-esp32-elf-g++, avr-gcc, ...). */
         private val COMPILER = Regex("""(^|-)(gcc|g\+\+|cc|c\+\+|cpp|as|ld|ar|gcc-ar|clang|clang\+\+)(-[0-9.]+)?$""")

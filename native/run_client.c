@@ -61,8 +61,10 @@ static int send_str(int fd, const char *s) {
     return send_u32(fd, (uint32_t)n) || write_all(fd, s, n);
 }
 
+/* Runs the command the way the recipe would have without the relay: under proot, with
+ * the PATH search a shell would do for bare names such as "python3". */
 static int fallback(char **cmd) {
-    execv(cmd[0], cmd);
+    execvp(cmd[0], cmd);
     fprintf(stderr, "anduino-run: cannot run %s: %s\n", cmd[0], strerror(errno));
     return 127;
 }

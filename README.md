@@ -62,9 +62,16 @@ without changing the rest of the app.
   (`libanduino-ld.so`, allowed to exec) plus an exec shim (`native/exec_shim.c`) that
   routes the compiler's sub-processes the same way — the glibc counterpart of
   termux-exec's "system linker exec". Anything that can't run natively falls back to
-  proot automatically (non-compiler steps that fail natively are rerun under proot);
-  only arduino-cli's own coordination stays in proot. Settings has a switch to turn it
-  off.
+  proot automatically (non-compiler steps that fail natively, and compilers killed by
+  the system, are rerun under proot); only arduino-cli's own coordination stays in
+  proot. Settings has a switch to turn it off.
+  Android's seccomp filter kills programs that use system calls it doesn't allow, which
+  proot would otherwise absorb: the shipped libc has its `clone3` call disabled
+  (`scripts/patch-glibc.py`, as Termux does for its glibc) and the shim answers other
+  trapped calls with ENOSYS so glibc uses the older call. `NativeExecTest` checks this
+  under an Android-style seccomp filter.
+* Every build ends with a short report: how many steps ran natively or under proot, the
+  time spent in each phase, and on failure the first error lines.
 
 ## Features
 

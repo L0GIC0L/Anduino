@@ -61,16 +61,25 @@ class BuildActions(
         if (code != 0 && toolMissing) {
             console.info("A compiler file is unreachable. Use Settings → Repair installed cores, then verify again.")
         }
-        val seconds = (System.currentTimeMillis() - started) / 1000.0
+        progress.finish()
+        val seconds = (System.currentTimeMillis() - started) / 1000
+        // Everything needed to understand the build sits in its last lines.
+        console.info(fastBuild.summary())
+        progress.timeSummary { formatDuration(it) }.takeIf { it.isNotEmpty() }?.let { console.info("Time: $it") }
         return if (code == 0) {
             console.success(
                 "Compilation finished in %s (%d files checked for libraries, %d compiled, %d reused).".format(
-                    formatDuration(seconds.toLong()), progress.checked, progress.compiled, progress.reused,
+                    formatDuration(seconds), progress.checked, progress.compiled, progress.reused,
                 ),
             )
             buildPath
         } else {
-            console.error("Compilation failed (exit code $code).")
+            val why = progress.failureSummary()
+            if (why.isNotEmpty()) {
+                console.error("Why it failed:")
+                why.forEach { console.error("  " + it.replace(rootPrefix, "")) }
+            }
+            console.error("Compilation failed after ${formatDuration(seconds)} (exit code $code).")
             null
         }
     }

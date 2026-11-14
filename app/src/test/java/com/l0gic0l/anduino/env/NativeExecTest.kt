@@ -106,6 +106,7 @@ class NativeExecTest {
             val bad = relay(gcc.path, "-c", "bad.c", "-o", "bad.o")
             assertEquals(1, bad.first)
             assertTrue(bad.third, bad.third.contains("error"))
+            assertEquals("a real compile error is not rerun", 0, server.fallbacks)
 
             val pre = relay(gcc.path, "-E", "ok.c")
             assertEquals(0, pre.first)
@@ -138,15 +139,82 @@ class NativeExecTest {
             assertTrue(logs.toString(), logs.single().contains("failed natively"))
             logs.clear()
 
+            // A compiler killed by the environment (as Android's seccomp filter does) is rerun.
+            val fakeCompiler = File(tmp.root, "xtensa-esp-elf-g++")
+            Files.createSymbolicLink(fakeCompiler.toPath(), Paths.get("/bin/bash"))
+            val killed = relay(
+                fakeCompiler.path, "-c",
+                "echo 'xtensa-esp-elf-g++: fatal error: Bad system call signal terminated program cc1plus' >&2; exit 4",
+            )
+            assertEquals(4, killed.first)
+            assertEquals(1, Regex("Bad system call").findAll(killed.third).count()) // printed once, by the rerun
+            assertTrue(logs.toString(), logs.single().contains("failed natively"))
+            logs.clear()
+
             // Not a dynamic ELF: the server declines and the client runs it itself.
             val script = File(work, "hello.sh").apply { writeText("#!/bin/sh\necho fallback-ok\n"); setExecutable(true) }
             val fb = relay(script.path)
             assertEquals(0, fb.first)
             assertEquals("fallback-ok", fb.second.trim())
-            assertEquals(nativeRuns + 1, server.commandsRun)
+            assertEquals(nativeRuns + 2, server.commandsRun)
+            assertEquals(1, server.declined)
             assertTrue(logs.toString(), logs.isEmpty())
+
+            // With native runs turned off, every command falls back, bare names included.
+            server.disabled = true
+            val bare = relay("sh", "-c", "echo bare-ok")
+            assertEquals(bare.third, 0, bare.first)
+            assertEquals("bare-ok", bare.second.trim())
         } finally {
             server.stop()
+        }
+    }
+
+    /**
+     * Android's app seccomp policy traps system calls it doesn't allow (SIGSYS). This jail
+     * traps clone3 and faccessat2 the same way; with the shipped glibc (clone3 disabled)
+     * and the shim's SIGSYS handler, threads, posix_spawn and the compiler still work.
+     */
+    @Test
+    fun survivesAndroidStyleSeccompTraps() {
+        val gcc = File("/usr/bin/gcc")
+        assumeTrue(gcc.exists() && System.getProperty("os.name") == "Linux" && System.getProperty("os.arch").orEmpty() in setOf("amd64", "x86_64"))
+        val work = tmp.newFolder("jail")
+        val jail = File(work, "jail")
+        val src = File(javaClass.classLoader!!.getResource("seccomp_jail.c")!!.toURI())
+        assertEquals(0, ProcessBuilder(gcc.path, "-O2", "-o", jail.path, src.path).inheritIO().start().waitFor())
+
+        val rootfs = tmp.newFolder("rootfs2")
+        for (d in listOf("lib", "usr", "bin")) Files.createSymbolicLink(Paths.get(rootfs.path, d), Paths.get("/$d"))
+        val native = NativeExec(jni.absoluteFile, rootfs, File(tmp.root, "glibc2"), "x86_64-linux-gnu")
+        native.install()
+        fun jailed(program: String, vararg args: String): Pair<Int, String> {
+            val pb = native.processBuilder(program, File(program).name, args.toList(), work)
+            pb.command(listOf(jail.path) + pb.command())
+            val p = pb.redirectErrorStream(true).start()
+            val out = p.inputStream.bufferedReader().readText()
+            assertTrue("timed out", p.waitFor(60, TimeUnit.SECONDS))
+            return p.exitValue() to out
+        }
+
+        // Without the shim, the host compiler dies as it would on a phone.
+        File(work, "ok.c").writeText("int add(int a, int b) { return a + b; }\n")
+        val bare = ProcessBuilder(jail.path, gcc.path, "-c", "ok.c", "-o", "bare.o").directory(work).redirectErrorStream(true).start()
+        val bareOut = bare.inputStream.bufferedReader().readText()
+        assertTrue(bareOut, bare.waitFor() != 0 && bareOut.contains("Bad system call"))
+
+        val cc = jailed(gcc.path, "-c", "ok.c", "-o", "ok.o")
+        assertEquals(cc.second, 0, cc.first)
+        assertTrue(File(work, "ok.o").length() > 0)
+
+        if (File("/usr/bin/python3").exists()) {
+            val py = jailed(
+                "/usr/bin/python3", "-c",
+                "import os, threading; t = threading.Thread(target=print, args=('thread-ok',)); t.start(); t.join(); " +
+                    "print('spawn', os.waitpid(os.posix_spawn('/bin/true', ['true'], os.environ), 0)[1])",
+            )
+            assertEquals(py.second, 0, py.first)
+            assertEquals(listOf("thread-ok", "spawn 0"), py.second.trim().lines())
         }
     }
 

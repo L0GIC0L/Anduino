@@ -53,17 +53,38 @@ class FastBuild(
 ) {
     private var selfTested = false
     private var selfTestOk = false
+    private var selfTestError = ""
+    private var offReason: String? = null
 
     /** Prepares everything for a build; returns true if compilers will run natively. */
     fun prepare(enabled: Boolean): Boolean {
-        val usable = enabled && native.isAvailable && !server.disabled && selfTest()
-        if (usable) {
+        server.resetStats()
+        offReason = when {
+            !enabled -> "off in Settings"
+            !native.isAvailable -> "not included in this app build"
+            server.disabled -> "turned off earlier in this session (${server.disabledReason})"
+            !selfTest() -> "unavailable on this device ($selfTestError)"
+            else -> null
+        }
+        if (offReason == null) {
             server.start()
             writeOverrides()
         } else {
             removeOverrides()
         }
-        return usable
+        return offReason == null
+    }
+
+    /** One line saying how much of the last build ran natively, for the end of the output. */
+    fun summary(): String {
+        offReason?.let { return "Fast native compiler: $it. Every step ran under proot (slow)." }
+        val reran = server.fallbacks
+        val native = server.commandsRun - reran
+        val sb = StringBuilder("Fast native compiler: $native steps ran natively")
+        if (server.declined > 0) sb.append(", ${server.declined} could not (ran under proot)")
+        if (reran > 0) sb.append(", $reran failed natively and were rerun under proot (${server.fallbackReasons.take(3).joinToString("; ")})")
+        server.disabledReason?.let { sb.append("; then turned off: $it") }
+        return sb.append('.').toString()
     }
 
     private fun selfTest(): Boolean {
@@ -75,9 +96,13 @@ class FastBuild(
             val p = native.processBuilder(probe.path, probe.path, emptyList(), File(native.root)).redirectErrorStream(true).start()
             val output = p.inputStream.bufferedReader().readText()
             val code = p.waitFor()
-            if (code != 0) console.info("Fast native compiler unavailable on this device (exit $code): ${output.take(300)}")
+            if (code != 0) {
+                selfTestError = "exit $code: ${output.trim().take(300)}"
+                console.info("Fast native compiler unavailable on this device ($selfTestError)")
+            }
             code == 0
         } catch (e: Exception) {
+            selfTestError = e.message.orEmpty()
             console.info("Fast native compiler unavailable on this device: ${e.message}")
             false
         }

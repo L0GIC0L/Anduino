@@ -24,12 +24,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <spawn.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -43,10 +45,36 @@ static spawn_fn real_posix_spawn;
 static readlink_fn real_readlink;
 static readlinkat_fn real_readlinkat;
 
+/*
+ * Android's seccomp filter for apps traps system calls it doesn't allow (SIGSYS with
+ * si_code SYS_SECCOMP; the call is not executed). glibc 2.39 tries newer calls first,
+ * such as clone3 (threads, posix_spawn) and faccessat2, and falls back to the older
+ * ones when the kernel answers ENOSYS. Under proot, proot absorbs the trap; outside it
+ * the process would be killed. So answer ENOSYS ourselves and let glibc fall back.
+ */
+static void on_sigsys(int sig, siginfo_t *info, void *context) {
+    if (info->si_code != 1 /* SYS_SECCOMP */) {
+        signal(SIGSYS, SIG_DFL);
+        raise(SIGSYS);
+        return;
+    }
+    ucontext_t *uc = context;
+#if defined(__aarch64__)
+    uc->uc_mcontext.regs[0] = (unsigned long long)-ENOSYS;
+#elif defined(__x86_64__)
+    uc->uc_mcontext.gregs[REG_RAX] = -ENOSYS;
+#endif
+}
+
 __attribute__((constructor)) static void shim_init(void) {
     real_posix_spawn = (spawn_fn)dlsym(RTLD_NEXT, "posix_spawn");
     real_readlink = (readlink_fn)dlsym(RTLD_NEXT, "readlink");
     real_readlinkat = (readlinkat_fn)dlsym(RTLD_NEXT, "readlinkat");
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = on_sigsys;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTART;
+    sigaction(SIGSYS, &sa, NULL);
 }
 
 static const char *env_in(char *const envp[], const char *name) {

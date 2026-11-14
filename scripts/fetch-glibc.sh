@@ -7,6 +7,8 @@
 # (mmap, which Android allows), the glibc equivalent of termux-exec's
 # "system linker exec". libc and friends come from the same package as the loader
 # so they always match it. At run time the app symlinks them under their sonames.
+# libc's clone3 call is disabled (scripts/patch-glibc.py): Android's seccomp policy
+# kills processes that use it.
 #
 # Requirements: curl, ar, tar (xz/zstd), python3.
 set -euo pipefail
@@ -38,6 +40,7 @@ EOF
               util:libutil.so.1 resolv:libresolv.so.2; do
     cp -L "$src/${pair#*:}" "$out/libglibc-${pair%%:*}.so"
   done
+  python3 "$ROOT/scripts/patch-glibc.py" "$out/libglibc-c.so" "$abi"
   chmod 755 "$out"/libanduino-ld.so "$out"/libglibc-*.so
 }
 
