@@ -1,0 +1,246 @@
+package com.l0gic0l.anduino.env
+
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.File
+import java.io.IOException
+import java.io.InputStream
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.security.SecureRandom
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
+
+/**
+ * Runs commands handed over by the relay client (native/run_client.c) natively via
+ * [NativeExec] and streams their output back. Listens on 127.0.0.1 only and accepts a
+ * request only with the random token written to the rootfs (readable only by this app).
+ * Anything it can't run natively is answered with "fall back", and the client then runs
+ * the command under proot as before, so builds never depend on this working.
+ */
+class ExecServer(
+    private val native: NativeExec,
+    /** Host file for the guest path [NativeExec.CONF_GUEST_PATH]. */
+    private val confFile: File,
+    private val log: (String) -> Unit = {},
+) {
+    private val token: String = ByteArray(16).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
+    private var server: ServerSocket? = null
+    private val pool = Executors.newCachedThreadPool { r -> Thread(r, "native-exec").apply { isDaemon = true } }
+
+    /** Set when native runs proved unusable on this device; from then on everything falls back. */
+    @Volatile var disabled = false
+
+    private val started = AtomicInteger()
+    private val reran = AtomicInteger()
+    private val refused = AtomicInteger()
+
+    /** Commands started natively since [resetStats]. */
+    val commandsRun: Int get() = started.get()
+
+    /** Commands handed back to the client to run under proot after failing natively. */
+    val fallbacks: Int get() = reran.get()
+
+    /** Commands the server could not run natively at all (scripts, static programs). */
+    val declined: Int get() = refused.get()
+
+    /** Why native mode was turned off, if it was. */
+    @Volatile var disabledReason: String? = null
+        private set
+
+    private val reasons = LinkedHashSet<String>()
+
+    val isRunning: Boolean get() = server?.isClosed == false
+
+    @Synchronized
+    fun start(): Int {
+        server?.takeIf { !it.isClosed }?.let { writeConf(it.localPort); return it.localPort }
+        val s = ServerSocket(0, 64, InetAddress.getByName("127.0.0.1"))
+        server = s
+        writeConf(s.localPort)
+        thread(name = "native-exec-accept", isDaemon = true) {
+            while (!s.isClosed) {
+                val socket = try {
+                    s.accept()
+                } catch (_: IOException) {
+                    break
+                }
+                pool.execute { serve(socket) }
+            }
+        }
+        return s.localPort
+    }
+
+    @Synchronized
+    fun stop() {
+        server?.close()
+        server = null
+        confFile.delete()
+    }
+
+    private fun writeConf(port: Int) {
+        confFile.parentFile?.mkdirs()
+        confFile.writeText("$port $token\n")
+    }
+
+    private fun serve(socket: Socket) {
+        socket.use { s ->
+            val input = DataInputStream(s.getInputStream().buffered())
+            val output = DataOutputStream(s.getOutputStream().buffered())
+            try {
+                val magic = ByteArray(4).also { input.readFully(it) }
+                if (String(magic, Charsets.US_ASCII) != "ANR1") return
+                if (readString(input) != token) return
+                val cwd = readString(input)
+                val argc = input.readInt()
+                if (argc !in 1..100_000) return
+                val argv = List(argc) { readString(input) }
+                run(argv, cwd, s.getInputStream(), output)
+            } catch (_: IOException) {
+                // client went away
+            }
+        }
+    }
+
+    private fun run(argv: List<String>, guestCwd: String, clientIn: InputStream, out: DataOutputStream) {
+        val program = native.resolveProgram(argv[0])
+        if (disabled || program == null || !native.canRun(program)) {
+            refused.incrementAndGet()
+            sendFallback(out)
+            return
+        }
+        val process = try {
+            native.processBuilder(program.path, argv[0], argv.drop(1), hostCwd(guestCwd)).start()
+        } catch (e: IOException) {
+            disableBecause("cannot start the native loader: ${e.message}")
+            sendFallback(out)
+            return
+        }
+        started.incrementAndGet()
+        process.outputStream.close()
+        // The client closing its end (build cancelled) kills the command.
+        thread(isDaemon = true, name = "native-exec-watch") {
+            try {
+                while (true) {
+                    if (clientIn.read() < 0) break
+                }
+            } catch (_: IOException) {
+            }
+            if (process.isAlive) process.destroyForcibly()
+        }
+        // Output is held until the command ends: if it failed because of the native
+        // environment rather than its input, the client reruns it under proot and nothing
+        // is printed twice. Commands are short, so nothing is lost by not streaming.
+        val held = listOf(java.io.ByteArrayOutputStream(), java.io.ByteArrayOutputStream())
+        val pumps = listOf(
+            thread(isDaemon = true) { pump(process.inputStream, held[0]) },
+            thread(isDaemon = true) { pump(process.errorStream, held[1]) },
+        )
+        val code = process.waitFor()
+        pumps.forEach { it.join() }
+        if (code != 0) {
+            val reason = environmentFailure(program.name, code, held[1].toString(Charsets.UTF_8))
+            if (reason != null) {
+                fellBack(program.name, reason)
+                sendFallback(out)
+                return
+            }
+        }
+        synchronized(out) {
+            for ((i, type) in listOf('O', 'E').withIndex()) {
+                val bytes = held[i].toByteArray()
+                if (bytes.isEmpty()) continue
+                out.writeByte(type.code)
+                out.writeInt(bytes.size)
+                out.write(bytes)
+            }
+            out.writeByte('X'.code)
+            out.writeInt(4)
+            out.writeInt(code)
+            out.flush()
+        }
+    }
+
+    /**
+     * Why a failed native run should be rerun under proot, or null if the failure is the
+     * command's own (a compile error in the sketch). Only compilers are trusted to fail
+     * for real: other steps (hooks, esptool, size) are cheap to rerun.
+     */
+    private fun environmentFailure(name: String, code: Int, stderr: String): String? {
+        if (code == 128 + SIGSYS) return "stopped by Android's system-call filter (SIGSYS)"
+        if (!COMPILER.containsMatchIn(name)) return "exit $code"
+        return ENVIRONMENT_ERRORS.find(stderr)?.let { "\"${it.value}\"" }
+    }
+
+    private fun fellBack(name: String, reason: String) {
+        reran.incrementAndGet()
+        val key = "$name: $reason"
+        val first = synchronized(reasons) { reasons.add(key) }
+        if (first) log("$name failed natively ($reason); running it under proot instead.")
+    }
+
+    /** Clears the per-build counters. */
+    fun resetStats() {
+        started.set(0)
+        reran.set(0)
+        refused.set(0)
+        synchronized(reasons) { reasons.clear() }
+    }
+
+    /** Distinct "program: reason" pairs of the commands rerun under proot since [resetStats]. */
+    val fallbackReasons: List<String> get() = synchronized(reasons) { reasons.toList() }
+
+    /** The client's working directory as a path outside proot. */
+    private fun hostCwd(guestCwd: String): File {
+        if (guestCwd == native.root || guestCwd.startsWith(native.root + "/")) return File(guestCwd)
+        File(native.root + guestCwd).takeIf { it.isDirectory }?.let { return it } // e.g. /root
+        File(guestCwd).takeIf { it.isDirectory }?.let { return it }
+        return File(native.root)
+    }
+
+    private fun pump(stream: InputStream, hold: java.io.ByteArrayOutputStream) {
+        try {
+            stream.copyTo(hold, 16 * 1024)
+        } catch (_: IOException) {
+        }
+    }
+
+    private fun sendFallback(out: DataOutputStream) {
+        synchronized(out) {
+            out.writeByte('F'.code)
+            out.writeInt(0)
+            out.flush()
+        }
+    }
+
+    private fun disableBecause(reason: String) {
+        if (!disabled) {
+            disabled = true
+            disabledReason = reason
+            log("Fast native compiler turned off: $reason. Builds continue the slower way.")
+        }
+    }
+
+    private fun readString(input: DataInputStream): String {
+        val n = input.readInt()
+        if (n !in 0..1_000_000) throw IOException("bad string length $n")
+        val bytes = ByteArray(n)
+        input.readFully(bytes)
+        return String(bytes, Charsets.UTF_8)
+    }
+
+    companion object {
+        private const val SIGSYS = 31
+
+        /** Compiler messages that mean the environment failed, not the source being compiled. */
+        private val ENVIRONMENT_ERRORS = Regex(
+            """Bad system call|signal terminated program|error while loading shared libraries|""" +
+                """cannot execute binary file|Exec format error|cannot open shared object file""",
+        )
+
+        /** gcc, g++, cc, c++, as, ld, ar with any target prefix (xtensa-esp32-elf-g++, avr-gcc, ...). */
+        private val COMPILER = Regex("""(^|-)(gcc|g\+\+|cc|c\+\+|cpp|as|ld|ar|gcc-ar|clang|clang\+\+)(-[0-9.]+)?$""")
+    }
+}
