@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Espressif native USB (USB-Serial/JTAG, TinyUSB, ROM CDC) -->
+    <usb-device vendor-id="12346" />
+    <!-- Silicon Labs CP210x -->
+    <usb-device vendor-id="4292" />
+    <!-- WCH CH340/CH343/CH9102 -->
+    <usb-device vendor-id="6790" />
+    <!-- FTDI -->
+    <usb-device vendor-id="1027" />
+    <!-- Prolific PL2303 -->
+    <usb-device vendor-id="1659" />
+    <!-- Arduino SA / Arduino LLC -->
+    <usb-device vendor-id="9025" />
+    <usb-device vendor-id="10755" />
+    <!-- Adafruit, Raspberry Pi (RP2040), SparkFun, Seeed -->
+    <usb-device vendor-id="9114" />
+    <usb-device vendor-id="11914" />
+    <usb-device vendor-id="6991" />
+    <usb-device vendor-id="10374" />
+</resources>

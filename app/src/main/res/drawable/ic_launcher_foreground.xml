@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Infinity-style "chip" glyph on the adaptive icon safe zone (66dp of 108dp). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:pathData="M54,54 C46,44 34,42 30,54 C34,66 46,64 54,54 C62,44 74,42 78,54 C74,66 62,64 54,54 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,51h8v6h-8z M70,49h3v3h3v3h-3v3h-3v-3h-3v-3h3z" />
+</vector>
