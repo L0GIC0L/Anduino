@@ -222,7 +222,7 @@ int volEst = 50;                          // local estimate only
 enum { NAV_TABS = 0, NAV_SCRUB, NAV_ZOOM, NAV_UNDO, NAV_COUNT };
 const char* const navNames[NAV_COUNT] = { "TABS", "SCRUB", "ZOOM", "UNDO" };
 const char* const navDesc[NAV_COUNT]  = { "CTRL+TAB / +SHIFT", "LEFT / RIGHT ARROW", "CTRL + WHEEL", "UNDO / REDO" };
-const char* const navHints[NAV_COUNT] = { "[1]MODE [3]NEW TAB", "[1]MODE [3]SPACE", "[1]MODE [3]RESET", "[1]MODE [3]SAVE" };
+const char* const navHints[NAV_COUNT] = { "[2]MODE [3]NEW TAB", "[2]MODE [3]SPACE", "[2]MODE [3]RESET", "[2]MODE [3]SAVE" };
 uint8_t navMode = NAV_TABS;
 bool zoomHeld = false;
 uint32_t zoomReleaseAt = 0;
@@ -336,6 +336,7 @@ const int MACRO_COUNT = sizeof(macros) / sizeof(macros[0]);
 
 void runMacro(int idx) {
   if (idx < 0 || idx >= MACRO_COUNT) return;
+  zoomRelease();                          // never type a macro with zoom's Ctrl still held
   const Macro& m = macros[idx];
   switch (m.type) {
     case MT_COMBO:    combo(m.mods, m.key); break;
@@ -366,17 +367,17 @@ const int HA_PCT_PER_DETENT = 3;          // brightness % per dial detent
 const int HA_KELVIN_STEP    = 200;        // color temp per detent while SW3 held
 
 volatile uint8_t haSel = 0;               // selected light
-int8_t  haOn[16];                         // -1 unknown, 0 off, 1 on
-uint8_t haBright[16];                     // 0..100 (last known / optimistic)
+int8_t  haOn[LIGHT_COUNT];                // -1 unknown, 0 off, 1 on
+uint8_t haBright[LIGHT_COUNT];            // 0..100 (last known / optimistic)
 volatile int haKelvin = 3000;
 volatile bool haOnline = false;
-volatile int  haLastCode = 0;
+volatile int  haLastCode = 0;             // 0 = no request yet, -1 = no response, else HTTP status
 
 // Pending commands (dial thread adds, HA task consumes atomically)
 volatile int  haPendBright = 0;           // accumulated brightness_step_pct
 volatile int  haPendCt = 0;               // flag: send haKelvin
 volatile int  haPendToggle = 0;
-volatile bool haPendRefresh = false;
+volatile int  haPendRefresh = 0;          // flag (int so it can be swapped atomically)
 
 // Temperature / humidity sensors (read-only, shown on the TEMPS page)
 struct HASensor { const char* label; const char* entity; };
@@ -386,10 +387,11 @@ const HASensor sensors[] = {
   { "NOELLE",   "sensor.sonoff_snzb_02ld" },
 };
 const int SENSOR_COUNT = sizeof(sensors) / sizeof(sensors[0]);
-float haSensVal[8];
-bool  haSensOk[8];
-char  haSensUnit[8];                      // last char of the unit, e.g. 'F', 'C', '%'
-volatile bool haPendSens = false;
+static_assert(SENSOR_COUNT <= 4, "TEMPS page has room for 4 sensors");
+float haSensVal[SENSOR_COUNT];
+bool  haSensOk[SENSOR_COUNT];
+char  haSensUnit[SENSOR_COUNT];           // last char of the unit, e.g. 'F', 'C', '%'
+volatile int haPendSens = 0;              // flag (int so it can be swapped atomically)
 
 // ============================================================================
 // 8. PAGE NAVIGATION, SETTINGS, TIMER
@@ -479,7 +481,13 @@ void sw2Action() {
   switch (currentPage) {
     case PAGE_SCROLL:   cfg.invert = !cfg.invert; settingsChanged(); break;
     case PAGE_MEDIA:    tapConsumer(CONSUMER_CONTROL_MUTE); setAction("MUTE"); break;
-    case PAGE_LIGHTS:   haSel = (haSel + 1) % LIGHT_COUNT; haPendRefresh = true; screenNeedsUpdate = true; break;
+    case PAGE_LIGHTS:
+      // Drop commands still queued for the old light so they can't land on the new one.
+      __atomic_store_n(&haPendBright, 0, __ATOMIC_SEQ_CST);
+      __atomic_store_n(&haPendCt, 0, __ATOMIC_SEQ_CST);
+      __atomic_store_n(&haPendToggle, 0, __ATOMIC_SEQ_CST);
+      haSel = (haSel + 1) % LIGHT_COUNT; haPendRefresh = true; screenNeedsUpdate = true;
+      break;
     case PAGE_TEMPS:    haPendSens = true; break;
     case PAGE_NAV:      zoomRelease(); navMode = (navMode + 1) % NAV_COUNT; acc = 0; screenNeedsUpdate = true; break;
     case PAGE_MACROS:   macroSel = 0; screenNeedsUpdate = true; break;
@@ -489,6 +497,7 @@ void sw2Action() {
   }
 }
 void sw3Action() {
+  zoomRelease();                          // else Ctrl stays "held" in our state but not on the host
   switch (currentPage) {
     case PAGE_MEDIA:
       tapConsumer(CONSUMER_CONTROL_PLAY_PAUSE);
@@ -601,8 +610,11 @@ void dialInput(long du) {
       } else {
         int pct = s * HA_PCT_PER_DETENT;
         __atomic_add_fetch(&haPendBright, pct, __ATOMIC_SEQ_CST);
-        haBright[haSel] = constrain((int)haBright[haSel] + pct, 0, 100);   // optimistic
-        if (pct > 0) haOn[haSel] = 1;
+        // Optimistic UI, matching HA: an off light steps up from 0, and reaching 0 turns it off.
+        int base = (haOn[haSel] == 0) ? 0 : haBright[haSel];
+        int nb = constrain(base + pct, 0, 100);
+        if (nb > 0) { haBright[haSel] = nb; haOn[haSel] = 1; }
+        else        { haOn[haSel] = 0; }      // keep last level for the next toggle-on
       }
       screenNeedsUpdate = true;
       break;
@@ -686,10 +698,12 @@ int readMagnetStatus() {
 void pollMagnet() {
   int st = readMagnetStatus();
   uint8_t ns = MAG_NONE;
-  if (st >= 0) {
+  // MD (0x20) must be set. With no magnet the chip can report ML=1 with MD=0; the
+  // angle output is then noise, which used to be read as random turning ("WEAK").
+  if (st >= 0 && (st & 0x20)) {
     if (st & 0x08)      ns = MAG_STRONG;   // MH
     else if (st & 0x10) ns = MAG_WEAK;     // ML
-    else if (st & 0x20) ns = MAG_OK;       // MD
+    else                ns = MAG_OK;
   }
   if (ns != magnetState) {
     if (magnetState == MAG_NONE) lastAngle = -1;   // resync on (re)detect
@@ -713,8 +727,9 @@ void pollDial(uint32_t nowUs) {
 
   speedEma = speedEma * 0.95f + abs(d) * 0.05f;
 
-  // Deadzone with hysteresis: small moves accumulate until they exceed it.
-  if (d == 0 || abs(d) < cfg.deadzone) return;
+  // Deadzone with hysteresis: moves of <= deadzone counts accumulate until they exceed it.
+  // (Was "< deadzone", which made settings 0 and 1 identical, so the default filtered nothing.)
+  if (abs(d) <= cfg.deadzone) return;
   lastAngle = a;
 
   if (dialLocked) return;
@@ -740,7 +755,9 @@ void parseLine(char* s) {
     lastHostMs = millis();
     if (lastHostMs == 0) lastHostMs = 1;
   } else if (s[0] == 'M' && s[1] == ',') {
-    runMacro(atoi(s + 2));
+    char* end;
+    long idx = strtol(s + 2, &end, 10);
+    if (end != s + 2) runMacro((int)idx);   // "M,junk" used to run macro 0 (Copy)
   }
 }
 void pollSerial() {
@@ -801,7 +818,7 @@ void renderPage(uint8_t pg) {
       drawRow(1, cfg.invert ? "DIR  : INVERT" : "DIR  : NORMAL");
       drawRow(2, dialLocked ? "STATE: LOCKED" : "STATE: ACTIVE");
       snprintf(b, sizeof(b), "MAG:%s ACCEL:%s", magNames[magnetState], cfg.accel ? "ON" : "OFF"); drawRow(3, b);
-      drawHint("[1]FLIP [3]MID-CLICK");
+      drawHint("[2]FLIP [3]MID-CLICK");
       break;
 
     case PAGE_MEDIA:
@@ -811,14 +828,19 @@ void renderPage(uint8_t pg) {
       display.setCursor(206, 59); display.print(b);
       snprintf(b, sizeof(b), "LAST: %.15s", lastAction); drawRow(2, b);
       drawRow(3, "HOLD [3]+TURN: SKIP");
-      drawHint("[1]MUTE [3]PLAY/PAUSE");
+      drawHint("[2]MUTE [3]PLAY/PAUSE");
       break;
 
     case PAGE_LIGHTS: {
       snprintf(b, sizeof(b), "%.20s", lights[haSel].name); drawRow(0, b);
       if (!haOnline) {
-        drawRow(1, WiFi.status() == WL_CONNECTED ? "HA: NO RESPONSE" : "WIFI: CONNECTING");
-        snprintf(b, sizeof(b), "CODE: %d", (int)haLastCode); drawRow(2, b);
+        int code = haLastCode;
+        if (WiFi.status() != WL_CONNECTED) drawRow(1, "WIFI: CONNECTING");
+        else if (code == 0)                drawRow(1, "HA: CONNECTING");
+        else if (code < 0)                 drawRow(1, "HA: NO RESPONSE");
+        else { snprintf(b, sizeof(b), "HA: HTTP ERROR %d", code); drawRow(1, b); }
+        if (code == 401)      drawRow(2, "CHECK HA_TOKEN");
+        else if (code == 404) drawRow(2, "CHECK ENTITY ID");
       } else {
         int pct = (haOn[haSel] == 0) ? 0 : haBright[haSel];
         drawBar(8, 48, 190, 12, pct);
@@ -828,7 +850,7 @@ void renderPage(uint8_t pg) {
         drawRow(2, b);
         drawRow(3, "HOLD [3]+TURN: WARMTH");
       }
-      drawHint("[1]NEXT [3]TOGGLE");
+      drawHint("[2]NEXT [3]TOGGLE");
       break;
     }
 
@@ -838,7 +860,7 @@ void renderPage(uint8_t pg) {
         else             snprintf(b, sizeof(b), "%-9s--", sensors[i].label);
         drawRow(i, b);
       }
-      drawHint(haOnline ? "[1]REFRESH" : "[1]REFRESH  (HA OFFLINE)");
+      drawHint(haOnline ? "[2]REFRESH" : "[2]REFRESH (OFFLINE)");   // old text ran off-screen
       break;
 
     case PAGE_NAV:
@@ -855,7 +877,7 @@ void renderPage(uint8_t pg) {
         snprintf(b, sizeof(b), "%c %.19s", idx == macroSel ? '>' : ' ', macros[idx].name);
         drawRow(r, b);
       }
-      snprintf(b, sizeof(b), "[3]RUN [1]TOP  %d/%d", macroSel + 1, MACRO_COUNT);
+      snprintf(b, sizeof(b), "[3]RUN [2]TOP  %d/%d", macroSel + 1, MACRO_COUNT);
       drawHint(b);
       break;
     }
@@ -872,7 +894,7 @@ void renderPage(uint8_t pg) {
       display.setCursor(8, 86); display.print(b);
       int pct = (timerState == T_IDLE) ? 0 : 100 - (int)((uint64_t)rem * 100 / timerTotalMs);
       drawBar(8, 92, 234, 6, pct);
-      drawHint(timerState == T_RUNNING ? "[1]RESET [3]PAUSE" : timerState == T_PAUSED ? "[1]RESET [3]RESUME" : "[1]RESET [3]START");
+      drawHint(timerState == T_RUNNING ? "[2]RESET [3]PAUSE" : timerState == T_PAUSED ? "[2]RESET [3]RESUME" : "[2]RESET [3]START");
       break;
     }
 
@@ -988,8 +1010,8 @@ static int haRequest(const char* method, const char* path, const char* body, siz
   if (body) cl.print(body);
 
   size_t n = 0;
-  uint32_t deadline = millis() + 3000;
-  while (millis() < deadline && n < cap - 1) {
+  uint32_t start = millis();
+  while ((millis() - start) < 3000 && n < cap - 1) {      // wrap-safe (millis rolls over at ~49 days)
     if (cl.available()) {
       int r = cl.read((uint8_t*)haBuf + n, cap - 1 - n);
       if (r > 0) n += r;
@@ -1007,93 +1029,112 @@ static const char* haBody() {
   return b ? b + 4 : haBuf + strlen(haBuf);
 }
 
+// Record the result of a request; redraw only if something visible changed.
+static void haSetStatus(int code, bool ok) {
+  if (code != haLastCode || ok != haOnline) screenNeedsUpdate = true;
+  haLastCode = code;
+  haOnline = ok;
+}
+
 bool haPost(const char* service, const char* body) {
   char path[48];
   snprintf(path, sizeof(path), "/api/services/light/%s", service);
   int code = haRequest("POST", path, body, 96);      // only need the status line
-  haLastCode = code;
   bool ok = (code >= 200 && code < 300);
-  if (ok != haOnline) { haOnline = ok; screenNeedsUpdate = true; }
+  haSetStatus(code, ok);
   return ok;
 }
 
 void haPoll(int idx) {
-  if (!strcmp(lights[idx].entity, "all")) return;     // no single state for "all"
-  char path[80];
-  snprintf(path, sizeof(path), "/api/states/%s", lights[idx].entity);
-  int code = haRequest("GET", path, nullptr, sizeof(haBuf));
-  haLastCode = code;
-  if (code == 200) {
-    const char* p = haBody();
-    if (strstr(p, "\"state\":\"on\""))       haOn[idx] = 1;
-    else if (strstr(p, "\"state\":\"off\"")) haOn[idx] = 0;
-    else                                     haOn[idx] = -1;
-    const char* q = strstr(p, "\"brightness\":");
-    if (q) {
-      int v = atoi(q + 13);                           // 0..255, null -> 0
-      haBright[idx] = constrain((v * 100 + 127) / 255, 0, 100);
-    }
-    q = strstr(p, "\"color_temp_kelvin\":");
-    if (q) {
-      int k = atoi(q + 20);
-      if (k > 0) haKelvin = k;
+  bool changed = false;
+  int code;
+  if (!strcmp(lights[idx].entity, "all")) {
+    code = haRequest("GET", "/api/", nullptr, 96);    // no single state for "all": just check HA is up
+  } else {
+    char path[80];
+    snprintf(path, sizeof(path), "/api/states/%s", lights[idx].entity);
+    code = haRequest("GET", path, nullptr, sizeof(haBuf));
+    if (code == 200) {
+      const char* p = haBody();
+      int8_t on = strstr(p, "\"state\":\"on\"") ? 1 : strstr(p, "\"state\":\"off\"") ? 0 : -1;
+      if (on != haOn[idx]) { haOn[idx] = on; changed = true; }
+      const char* q = strstr(p, "\"brightness\":");
+      if (q && q[13] != 'n') {                        // "null" while off: keep the last known level
+        uint8_t v = constrain((atoi(q + 13) * 100 + 127) / 255, 0, 100);
+        if (v != haBright[idx]) { haBright[idx] = v; changed = true; }
+      }
+      q = strstr(p, "\"color_temp_kelvin\":");
+      if (q) {
+        int k = atoi(q + 20);
+        if (k > 0 && k != haKelvin) { haKelvin = k; changed = true; }
+      }
     }
   }
-  haOnline = (code == 200);
-  screenNeedsUpdate = true;
+  haSetStatus(code, code == 200);
+  if (changed) screenNeedsUpdate = true;              // the 10 s poll no longer redraws for nothing
 }
 
 void haPollSensors() {
+  bool changed = false, anyOk = false;
+  int code = 0;
   for (int i = 0; i < SENSOR_COUNT; i++) {
     char path[80];
     snprintf(path, sizeof(path), "/api/states/%s", sensors[i].entity);
-    int code = haRequest("GET", path, nullptr, sizeof(haBuf));
-    haLastCode = code;
-    haSensOk[i] = false;
+    code = haRequest("GET", path, nullptr, sizeof(haBuf));
+    bool ok = false;                                  // work on locals so the screen never
+    float val = haSensVal[i];                         // catches a half-updated value
+    char unit = haSensUnit[i];
     if (code == 200) {
+      anyOk = true;
       const char* p = haBody();
       const char* s = strstr(p, "\"state\":\"");
       if (s) {
         s += 9;
         char* end;
         float f = strtof(s, &end);
-        if (end != s) { haSensVal[i] = f; haSensOk[i] = true; }   // "unavailable" -> not ok
+        if (end != s) { val = f; ok = true; }         // "unavailable" -> not ok
       }
       const char* u = strstr(p, "\"unit_of_measurement\":\"");
       if (u) {
         u += 23;
         const char* e = strchr(u, '"');
-        if (e && e > u) haSensUnit[i] = e[-1];
+        if (e && e > u) unit = e[-1];
       }
     }
+    if (ok != haSensOk[i] || val != haSensVal[i] || unit != haSensUnit[i]) changed = true;
+    haSensVal[i] = val; haSensUnit[i] = unit; haSensOk[i] = ok;
   }
-  screenNeedsUpdate = true;
+  haSetStatus(code, anyOk);
+  if (changed) screenNeedsUpdate = true;
 }
 
 void haTask(void* parameter) {
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);                   // modem sleep can add 100+ ms to every HA reply; USB powered, so no cost
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   uint32_t lastSend = 0, lastPoll = 0, pollAt = 0, lastSensPoll = 0;
-  bool firstPoll = true;
+  bool wasConnected = false;
 
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
-      if (haOnline) { haOnline = false; screenNeedsUpdate = true; }
+      wasConnected = false;
+      haSetStatus(0, false);
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
     }
     uint32_t now = millis();
-    if (firstPoll) { firstPoll = false; pollAt = now + 50; }
+    if (!wasConnected) { wasConnected = true; pollAt = now + 50; }   // (re)connected: fetch state
 
     // Coalesce dial movement: send at most one batch every ~120 ms.
     if ((now - lastSend) >= 120) {
+      uint8_t sel = haSel;                // snapshot before taking the queued commands
       int  tog = __atomic_exchange_n(&haPendToggle, 0, __ATOMIC_SEQ_CST);
       int  br  = __atomic_exchange_n(&haPendBright, 0, __ATOMIC_SEQ_CST);
       int  ct  = __atomic_exchange_n(&haPendCt, 0, __ATOMIC_SEQ_CST);
-      bool ref = haPendRefresh; haPendRefresh = false;
-      const char* ent = lights[haSel].entity;
+      bool ref = __atomic_exchange_n(&haPendRefresh, 0, __ATOMIC_SEQ_CST);
+      const char* ent = lights[sel].entity;
       char body[128];
       bool sent = false;
 
@@ -1122,8 +1163,8 @@ void haTask(void* parameter) {
     }
 
     // Temperature sensors: on page entry / SW2, and every 20 s while the page is open.
-    if (haPendSens || (currentPage == PAGE_TEMPS && (millis() - lastSensPoll) > 20000)) {
-      haPendSens = false;
+    bool sensReq = __atomic_exchange_n(&haPendSens, 0, __ATOMIC_SEQ_CST);
+    if (sensReq || (currentPage == PAGE_TEMPS && (millis() - lastSensPoll) > 20000)) {
       lastSensPoll = millis();
       haPollSensors();
     }
@@ -1153,7 +1194,7 @@ void setup() {
   pollMagnet();
   screenNeedsUpdate = true;
 
-  for (int i = 0; i < 16; i++) { haOn[i] = -1; haBright[i] = 50; }
+  for (int i = 0; i < LIGHT_COUNT; i++) { haOn[i] = -1; haBright[i] = 50; }
 
   xTaskCreatePinnedToCore(eInkDisplayTask, "eInkTask", 8192, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(haTask, "haTask", 10240, NULL, 1, NULL, 0);
